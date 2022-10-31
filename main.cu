@@ -21,8 +21,9 @@
 #define FISH_LENGTH 8.0f
 #define FISH_WIDTH 3.0f
 #define MAX_VELOCITY 1.0f
+#define MAX_ACCELERATION 0.1f
 
-#define SIGHT 50.0f
+#define SIGHT 10000.0f
 
 #define mapRange(a1,a2,b1,b2,s) (b1 + (s-a1)*(b2-b1)/(a2-a1))
 
@@ -33,7 +34,7 @@ const int window_height = 960;
 const int sea_width    = window_width / 2;
 const int sea_height   = window_height / 2;
 
-float *d_x, *d_y, *d_vx, *d_vy;
+float *d_x, *d_y, *d_vx, *d_vy, *d_tempx, *d_tempy, *d_count;
 
 // vbo variables
 GLuint vbo;
@@ -70,12 +71,51 @@ void timerEvent(int value);
 void display();
 void runCuda(struct cudaGraphicsResource **vbo_resource);
 
-__global__ void kernel_reduce3D(float *data_in, float *data_out)
+__global__ void kernel_update_velocity(float *vx, float *vy, float *correctionX, float *correctionY, float *count)
 {
+    unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
 
+    if(count[tid] != 0)
+    {
+        float tvx = vx[tid];
+        float tvy = vy[tid];
+
+        float nvx = correctionX[N * tid] / count[tid] - tvx;
+        float nvy = correctionY[N * tid] / count[tid] - tvy;
+
+        float d = sqrt(nvx * nvx + nvy * nvy);
+
+        nvx = tvx + MAX_ACCELERATION / d * nvx;
+        nvy = tvy + MAX_ACCELERATION / d * nvy;
+
+        d = sqrt(nvx * nvx + nvy * nvy);
+
+
+        vx[tid] = MAX_VELOCITY / d * nvx;
+        vy[tid] = MAX_VELOCITY / d * nvy;
+    }
 }
 
-__global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, float *correctionX, float *correctionY, int *count)
+__global__ void kernel_reduce3D(float *data_in, float *data_out)
+{
+    extern __shared__ int sdata[];
+    // each thread loads one element from global to shared mem
+    unsigned int tid = threadIdx.x;
+    unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
+    sdata[tid] = data_in[i];
+    __syncthreads();
+    // do reduction in shared mem
+    for (unsigned int s=blockDim.x/2; s>0; s>>=1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        __syncthreads();
+    }
+    // write result for this block to global mem
+    if (tid == 0) data_out[blockDim.x * blockIdx.x] = sdata[0];
+}
+
+__global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, float *correctionX, float *correctionY, float *count)
 {
     unsigned int tidx = threadIdx.x + blockIdx.x * blockDim.x; // Fish number tidx is ANOTHER fish
     unsigned int tidy = threadIdx.y + blockIdx.y * blockDim.y; // Fish number tidy is MY fish
@@ -83,19 +123,21 @@ __global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, fl
     float dx = x[tidy] - x[tidx];
     float dy = y[tidy] - y[tidx];
 
-    if(dx * dx + dy * dy < SIGHT)
-    {
-        correctionX[tidx * N + tidy] = vx[tidy];
-        correctionY[tidx * N + tidy] = vy[tidy];
+    float d = dx * dx + dy * dy;
 
-        count[tidx * N + tidy] = 1;
+    if(d < SIGHT && tidx != tidy)
+    {
+        correctionX[tidy * N + tidx] = vx[tidx]; //vx[tidx] + dx + x[tidx];
+        correctionY[tidy * N + tidx] = vy[tidx]; //vy[tidx] + dy + y[tidx];
+
+        count[tidy * N + tidx] = 1;
     }
     else
     {
-        correctionX[tidx * N + tidy] = 0;
-        correctionY[tidx * N + tidy] = 0;
+        correctionX[tidy * N + tidx] = 0;
+        correctionY[tidy * N + tidx] = 0;
 
-        count[tidx * N + tidy] = 0;
+        count[tidy * N + tidx] = 0;
     }
 
 }
@@ -188,6 +230,9 @@ void initCUDA()
     cudaMalloc(&d_y, N * sizeof(float));
     cudaMalloc(&d_vx, N * sizeof(float));
     cudaMalloc(&d_vy, N * sizeof(float));
+    cudaMalloc(&d_tempx, N * N * sizeof(float));
+    cudaMalloc(&d_tempy, N * N * sizeof(float));
+    cudaMalloc(&d_count, N * N * sizeof(float));
 
     cudaMemcpy(d_x, h_x, N * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_y, h_y, N * sizeof(float), cudaMemcpyHostToDevice);    
@@ -251,6 +296,13 @@ void cleanup()
     {
         deleteVBO(&vbo, cuda_vbo_resource);
     }
+    cudaFree(d_x);
+    cudaFree(d_y);
+    cudaFree(d_vx);
+    cudaFree(d_vy);
+    cudaFree(d_tempx);
+    cudaFree(d_tempy);
+    cudaFree(d_count);
 }
 
 void createVBO(GLuint *vbo, struct cudaGraphicsResource **vbo_res,
@@ -329,25 +381,32 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
 
     // execute the kernel
     dim3 grid2D(1024, 1, 1);
-    dim3 block2D(N / 1024, 1, 1);
+    dim3 block2D(N / 1024, 1, 1);    
+    dim3 grid3D(1024, 1024, 1);
+    dim3 block3D(N / 1024, N / 1024, 1);
+    dim3 gridReduce(1024, 1, 1);
+    dim3 blockReduce(N * N / 1024, 1, 1);
+
+    size_t shm_size = 1024 * sizeof(float);
+
+    kernel_prepare_move<<<grid3D, block3D>>>(d_x, d_y, d_vx, d_vy, d_tempx, d_tempy, d_count);
+    cudaDeviceSynchronize();
+    kernel_reduce3D<<<gridReduce, blockReduce, shm_size>>>(d_tempx, d_tempx);
+    kernel_reduce3D<<<gridReduce, blockReduce, shm_size>>>(d_tempy, d_tempy);
+    kernel_reduce3D<<<gridReduce, blockReduce, shm_size>>>(d_count, d_count);
+    // {
+    //     float *debug = new float[N * N];
+    //     cudaMemcpy(debug, d_count, N * N * sizeof(float), cudaMemcpyDeviceToHost);
+    //     for(int i = 0; i < N * N; i++)
+    //     {
+    //         std::cout << i << ":" << debug[i] << std::endl;
+    //     }
+    //     delete[] debug;
+    //     exit(1);
+    // }
+    kernel_update_velocity<<<grid2D, block2D>>>(d_vx, d_vy, d_tempx, d_tempy, d_count);
     kernel_move<<<grid2D, block2D>>>(d_x, d_y, d_vx, d_vy);
     kernel_display<<<grid2D, block2D>>>(dptr, d_x, d_y, d_vx, d_vy);
-
-    // DEBUG
-    // float* debug_vx;
-    // cudaMalloc(&debug_vx, 9 * N * sizeof(float));
-    // kernel_display<<<grid, block>>>(dptr, d_x, d_y, debug_vx, d_vy);
-
-    // float * print_vx;
-    // cudaMemcpy(print_vx, debug_vx, 9 * N * sizeof(float), cudaMemcpyDeviceToHost);
-
-    // for(int i = 0; i < N; ++i)
-    // {
-    //     printf("i=%d p=0 x: %f y: %f z: %f\n", i, print_vx[9 * i], print_vx[9 * i + 1], print_vx[9 * i + 2]);
-    //     printf("i=%d p=1 x: %f y: %f z: %f\n", i, print_vx[9 * i + 3], print_vx[9 * i + 4], print_vx[9 * i + 5]);
-    //     printf("i=%d p=2 x: %f y: %f z: %f\n", i, print_vx[9 * i + 6], print_vx[9 * i + 7], print_vx[9 * i + 8]);
-    // }
-    // exit(1);
 
     // unmap buffer object
     checkCudaErrors(cudaGraphicsUnmapResources(1, vbo_resource, 0));
@@ -423,6 +482,6 @@ void computeFPS()
     }
 
     char fps[256];
-    sprintf(fps, "Cuda GL Interop (VBO): %3.1f fps (Max 100Hz)", avgFPS);
+    sprintf(fps, "Fish simulation: %3.1f fps (Max 100Hz)", avgFPS);
     glutSetWindowTitle(fps);
 }
