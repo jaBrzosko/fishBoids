@@ -20,8 +20,13 @@
 #define N 1024
 #define FISH_LENGTH 8.0f
 #define FISH_WIDTH 3.0f
+
 #define MAX_VELOCITY 1.0f
-#define MAX_ACCELERATION 0.1f
+#define MIN_VELOCITY 0.8f
+
+#define MAX_ACCELERATION 0.2f
+
+#define TURN_FACTOR 0.04f
 
 #define SIGHT 10000.0f
 
@@ -71,6 +76,26 @@ void timerEvent(int value);
 void display();
 void runCuda(struct cudaGraphicsResource **vbo_resource);
 
+__global__ void kernel_normalize_velocity(float *vx, float *vy)
+{
+    unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    
+    float tvx = vx[tid];
+    float tvy = vy[tid];
+    
+    float speed = sqrt(tvx * tvx + tvy * tvy);
+    if(speed > MAX_VELOCITY)
+    {
+        vx[tid] = MAX_VELOCITY * tvx / speed;
+        vy[tid] = MAX_VELOCITY * tvy / speed;
+    }
+    else if(speed < MIN_VELOCITY)
+    {
+        vx[tid] = MIN_VELOCITY * tvx / speed;
+        vy[tid] = MIN_VELOCITY * tvy / speed;
+    }
+}
+
 __global__ void kernel_update_velocity(float *vx, float *vy, float *correctionX, float *correctionY, float *count)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -88,11 +113,14 @@ __global__ void kernel_update_velocity(float *vx, float *vy, float *correctionX,
         nvx = tvx + MAX_ACCELERATION / d * nvx;
         nvy = tvy + MAX_ACCELERATION / d * nvy;
 
-        d = sqrt(nvx * nvx + nvy * nvy);
+        vx[tid] = nvx;
+        vy[tid] = nvy;
+
+        // d = sqrt(nvx * nvx + nvy * nvy);
 
 
-        vx[tid] = MAX_VELOCITY / d * nvx;
-        vy[tid] = MAX_VELOCITY / d * nvy;
+        // vx[tid] = MAX_VELOCITY / d * nvx;
+        // vy[tid] = MAX_VELOCITY / d * nvy;
     }
 }
 
@@ -125,7 +153,7 @@ __global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, fl
 
     float d = dx * dx + dy * dy;
 
-    if(d < SIGHT && tidx != tidy)
+    if(d < SIGHT)
     {
         correctionX[tidy * N + tidx] = vx[tidx]; //vx[tidx] + dx + x[tidx];
         correctionY[tidy * N + tidx] = vy[tidx]; //vy[tidx] + dy + y[tidx];
@@ -147,16 +175,25 @@ __global__ void kernel_move(float *x, float *y, float *vx, float *vy)
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
     float nx = x[tid] + vx[tid];
     float ny = y[tid] + vy[tid];
-    // repair X
+    // // repair X
+    // if(nx < -sea_width)
+    //     nx = sea_width;
+    // else if(nx > sea_width)
+    //     nx = -sea_width;
+    // // repair Y
+    // if(ny < -sea_height)
+    //     ny = sea_height;
+    // else if(ny > sea_height)
+    //     ny = -sea_height;
     if(nx < -sea_width)
-        nx = sea_width;
+        vx[tid] = vx[tid] + TURN_FACTOR * (-sea_width - nx);
     else if(nx > sea_width)
-        nx = -sea_width;
+        vx[tid] = vx[tid] - TURN_FACTOR * (nx - sea_height);
     // repair Y
     if(ny < -sea_height)
-        ny = sea_height;
+        vy[tid] = vy[tid] + TURN_FACTOR * (-sea_height - ny);
     else if(ny > sea_height)
-        ny = -sea_height;
+        vy[tid] = vy[tid] - TURN_FACTOR * (ny - sea_height);
     x[tid] = nx;
     y[tid] = ny;
     
@@ -380,17 +417,16 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
 
 
     // execute the kernel
-    dim3 grid2D(1024, 1, 1);
-    dim3 block2D(N / 1024, 1, 1);    
-    dim3 grid3D(1024, 1024, 1);
-    dim3 block3D(N / 1024, N / 1024, 1);
-    dim3 gridReduce(1024, 1, 1);
-    dim3 blockReduce(N * N / 1024, 1, 1);
+    dim3 grid2D(N/1024, 1, 1);
+    dim3 block2D(1024, 1, 1);    
+    dim3 grid3D(N / 32, N / 32, 1);
+    dim3 block3D(32, 32, 1);
+    dim3 gridReduce(N * N / 1024, 1, 1);
+    dim3 blockReduce(1024, 1, 1);
 
     size_t shm_size = 1024 * sizeof(float);
 
     kernel_prepare_move<<<grid3D, block3D>>>(d_x, d_y, d_vx, d_vy, d_tempx, d_tempy, d_count);
-    cudaDeviceSynchronize();
     kernel_reduce3D<<<gridReduce, blockReduce, shm_size>>>(d_tempx, d_tempx);
     kernel_reduce3D<<<gridReduce, blockReduce, shm_size>>>(d_tempy, d_tempy);
     kernel_reduce3D<<<gridReduce, blockReduce, shm_size>>>(d_count, d_count);
@@ -405,6 +441,8 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
     //     exit(1);
     // }
     kernel_update_velocity<<<grid2D, block2D>>>(d_vx, d_vy, d_tempx, d_tempy, d_count);
+
+    kernel_normalize_velocity<<<grid2D, block2D>>>(d_vx, d_vy);
     kernel_move<<<grid2D, block2D>>>(d_x, d_y, d_vx, d_vy);
     kernel_display<<<grid2D, block2D>>>(dptr, d_x, d_y, d_vx, d_vy);
 
