@@ -17,6 +17,9 @@
 #define THRESHOLD          0.30f
 #define REFRESH_DELAY     10 //ms
 
+////////////////////////////////////////////////////////////////////////////////
+//! Parameters
+////////////////////////////////////////////////////////////////////////////////
 #define N 1024
 #define FISH_LENGTH 8.0f
 #define FISH_WIDTH 3.0f
@@ -26,9 +29,16 @@
 
 #define MAX_ACCELERATION 0.2f
 
-#define TURN_FACTOR 0.04f
+#define SIGHT 10000.0f //squared
 
-#define SIGHT 10000.0f
+#define TURN_FACTOR 10.04f
+#define COHESTION_FACTOR 0.0f
+#define ALIGNMENT_FACTOR 0.0f
+#define SEPARATION_FACTOR 1.0f
+////////////////////////////////////////////////////////////////////////////////
+//! Parameters
+////////////////////////////////////////////////////////////////////////////////
+
 
 #define mapRange(a1,a2,b1,b2,s) (b1 + (s-a1)*(b2-b1)/(a2-a1))
 
@@ -39,7 +49,7 @@ const int window_height = 960;
 const int sea_width    = window_width / 2;
 const int sea_height   = window_height / 2;
 
-float *d_x, *d_y, *d_vx, *d_vy, *d_tempx, *d_tempy, *d_count;
+float *d_x, *d_y, *d_vx, *d_vy, *d_cohesionx, *d_cohesiony, *d_alignmentx, *d_alignmenty, *d_separationx, *d_separationy, *d_count;
 
 // vbo variables
 GLuint vbo;
@@ -96,7 +106,7 @@ __global__ void kernel_normalize_velocity(float *vx, float *vy)
     }
 }
 
-__global__ void kernel_update_velocity(float *vx, float *vy, float *correctionX, float *correctionY, float *count)
+__global__ void kernel_update_velocity(float *x, float *y, float *vx, float *vy, float *cohX, float *cohY, float *sepX, float *sepY, float *alignX, float *alignY, float *count)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -105,32 +115,30 @@ __global__ void kernel_update_velocity(float *vx, float *vy, float *correctionX,
         float tvx = vx[tid];
         float tvy = vy[tid];
 
-        float nvx = correctionX[N * tid] / count[tid] - tvx;
-        float nvy = correctionY[N * tid] / count[tid] - tvy;
+        int cnt = count[tid];
+
+        float nvx = sepX[tid] * SEPARATION_FACTOR + (alignX[tid] / cnt - tvx) * ALIGNMENT_FACTOR  + (cohX[tid] / cnt - x[tid]) * ALIGNMENT_FACTOR;
+        float nvy = sepY[tid] * SEPARATION_FACTOR + (alignY[tid] / cnt - tvy) * ALIGNMENT_FACTOR  + (cohY[tid] / cnt - y[tid]) * ALIGNMENT_FACTOR;
 
         float d = sqrt(nvx * nvx + nvy * nvy);
 
-        nvx = tvx + MAX_ACCELERATION / d * nvx;
-        nvy = tvy + MAX_ACCELERATION / d * nvy;
+
+        vx[tid] = MAX_VELOCITY / d * nvx;
+        vy[tid] = MAX_VELOCITY / d * nvy;
+
 
         vx[tid] = nvx;
         vy[tid] = nvy;
-
-        // d = sqrt(nvx * nvx + nvy * nvy);
-
-
-        // vx[tid] = MAX_VELOCITY / d * nvx;
-        // vy[tid] = MAX_VELOCITY / d * nvy;
     }
 }
 
-__global__ void kernel_reduce3D(float *data_in, float *data_out)
+__global__ void reduce(float *data)
 {
     extern __shared__ int sdata[];
     // each thread loads one element from global to shared mem
     unsigned int tid = threadIdx.x;
     unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
-    sdata[tid] = data_in[i];
+    sdata[tid] = data[i];
     __syncthreads();
     // do reduction in shared mem
     for (unsigned int s=blockDim.x/2; s>0; s>>=1) {
@@ -140,10 +148,21 @@ __global__ void kernel_reduce3D(float *data_in, float *data_out)
         __syncthreads();
     }
     // write result for this block to global mem
-    if (tid == 0) data_out[blockDim.x * blockIdx.x] = sdata[0];
+    if (tid == 0) data[blockDim.x * blockIdx.x] = sdata[0];
 }
 
-__global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, float *correctionX, float *correctionY, float *count)
+__global__ void finish_reduce(float *data, int count)
+{
+    unsigned int tid = threadIdx.x + blockDim.x * blockIdx.x;
+    int sum = 0;
+    for(int i = 0; i < count; i++)
+    {
+        sum += data[tid * N + i * 1024];
+    }
+    data[tid * N] = sum;
+}
+
+__global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, float *cohX, float *cohY, float *sepX, float *sepY, float *alignX, float *alignY, float *count)
 {
     unsigned int tidx = threadIdx.x + blockIdx.x * blockDim.x; // Fish number tidx is ANOTHER fish
     unsigned int tidy = threadIdx.y + blockIdx.y * blockDim.y; // Fish number tidy is MY fish
@@ -153,19 +172,29 @@ __global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, fl
 
     float d = dx * dx + dy * dy;
 
-    if(d < SIGHT)
-    {
-        correctionX[tidy * N + tidx] = vx[tidx] + dx; //vx[tidx] + dx + x[tidx];
-        correctionY[tidy * N + tidx] = vy[tidx] + dy; //vy[tidx] + dy + y[tidx];
+    unsigned int index = tidy * N + tidx;
 
-        count[tidy * N + tidx] = 1;
+    if(d < SIGHT && tidx != tidy)
+    {
+        cohX[index] = x[tidy];
+        cohY[index] = y[tidy];        
+        sepX[index] = -dx;
+        sepY[index] = -dy;
+        alignX[index] = vx[tidy];
+        alignY[index] = vy[tidy];
+
+        count[index] = 1;
     }
     else
     {
-        correctionX[tidy * N + tidx] = 0;
-        correctionY[tidy * N + tidx] = 0;
+        cohX[index] = 0;
+        cohY[index] = 0;        
+        sepX[index] = 0;
+        sepY[index] = 0;
+        alignX[index] = 0;
+        alignY[index] = 0;
 
-        count[tidy * N + tidx] = 0;
+        count[index] = 0;
     }
 
 }
@@ -175,25 +204,17 @@ __global__ void kernel_move(float *x, float *y, float *vx, float *vy)
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
     float nx = x[tid] + vx[tid];
     float ny = y[tid] + vy[tid];
-    // // repair X
-    // if(nx < -sea_width)
-    //     nx = sea_width;
-    // else if(nx > sea_width)
-    //     nx = -sea_width;
-    // // repair Y
-    // if(ny < -sea_height)
-    //     ny = sea_height;
-    // else if(ny > sea_height)
-    //     ny = -sea_height;
+
+    // repair X velocity
     if(nx < -sea_width)
-        vx[tid] = vx[tid] + TURN_FACTOR * (-sea_width - nx);
+        vx[tid] = vx[tid] + TURN_FACTOR;
     else if(nx > sea_width)
-        vx[tid] = vx[tid] - TURN_FACTOR * (nx - sea_height);
-    // repair Y
+        vx[tid] = vx[tid] - TURN_FACTOR;
+    // repair Y velocity
     if(ny < -sea_height)
-        vy[tid] = vy[tid] + TURN_FACTOR * (-sea_height - ny);
+        vy[tid] = vy[tid] + TURN_FACTOR;
     else if(ny > sea_height)
-        vy[tid] = vy[tid] - TURN_FACTOR * (ny - sea_height);
+        vy[tid] = vy[tid] - TURN_FACTOR;
     x[tid] = nx;
     y[tid] = ny;
     
@@ -251,7 +272,7 @@ void initCUDA()
     float* h_vy = new float[N];
 
     // srand(time(NULL));
-    srand(0);
+    srand(time(NULL));
 
     for(int i = 0; i < N; ++i)
     {
@@ -267,8 +288,12 @@ void initCUDA()
     cudaMalloc(&d_y, N * sizeof(float));
     cudaMalloc(&d_vx, N * sizeof(float));
     cudaMalloc(&d_vy, N * sizeof(float));
-    cudaMalloc(&d_tempx, N * N * sizeof(float));
-    cudaMalloc(&d_tempy, N * N * sizeof(float));
+    cudaMalloc(&d_cohesionx, N * N * sizeof(float));
+    cudaMalloc(&d_cohesiony, N * N * sizeof(float));    
+    cudaMalloc(&d_separationx, N * N * sizeof(float));
+    cudaMalloc(&d_separationy, N * N * sizeof(float));
+    cudaMalloc(&d_alignmentx, N * N * sizeof(float));
+    cudaMalloc(&d_alignmenty, N * N * sizeof(float));
     cudaMalloc(&d_count, N * N * sizeof(float));
 
     cudaMemcpy(d_x, h_x, N * sizeof(float), cudaMemcpyHostToDevice);
@@ -337,8 +362,12 @@ void cleanup()
     cudaFree(d_y);
     cudaFree(d_vx);
     cudaFree(d_vy);
-    cudaFree(d_tempx);
-    cudaFree(d_tempy);
+    cudaFree(d_separationx);
+    cudaFree(d_separationy);
+    cudaFree(d_cohesionx);
+    cudaFree(d_cohesiony);
+    cudaFree(d_alignmentx);
+    cudaFree(d_alignmenty);
     cudaFree(d_count);
 }
 
@@ -426,21 +455,39 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
 
     size_t shm_size = 1024 * sizeof(float);
 
-    kernel_prepare_move<<<grid3D, block3D>>>(d_x, d_y, d_vx, d_vy, d_tempx, d_tempy, d_count);
-    kernel_reduce3D<<<gridReduce, blockReduce, shm_size>>>(d_tempx, d_tempx);
-    kernel_reduce3D<<<gridReduce, blockReduce, shm_size>>>(d_tempy, d_tempy);
-    kernel_reduce3D<<<gridReduce, blockReduce, shm_size>>>(d_count, d_count);
-    // {
+    kernel_prepare_move<<<grid3D, block3D>>>(d_x, d_y, d_vx, d_vy, d_cohesionx, d_cohesiony, d_separationx, d_separationy, d_alignmentx, d_alignmenty, d_count);
+    //  {
     //     float *debug = new float[N * N];
     //     cudaMemcpy(debug, d_count, N * N * sizeof(float), cudaMemcpyDeviceToHost);
-    //     for(int i = 0; i < N * N; i++)
+    //     for(int i = 0; i < N; i++)
     //     {
-    //         std::cout << i << ":" << debug[i] << std::endl;
+    //         for(int j = 0; j < N; j++)
+    //         {
+    //             std::cout << i << ":" << j << "\t" << debug[i] << std::endl;
+    //         }
     //     }
     //     delete[] debug;
     //     exit(1);
     // }
-    kernel_update_velocity<<<grid2D, block2D>>>(d_vx, d_vy, d_tempx, d_tempy, d_count);
+    reduce<<<gridReduce, blockReduce, shm_size>>>(d_cohesionx);
+    reduce<<<gridReduce, blockReduce, shm_size>>>(d_cohesiony);
+    reduce<<<gridReduce, blockReduce, shm_size>>>(d_separationx);
+    reduce<<<gridReduce, blockReduce, shm_size>>>(d_separationy);
+    reduce<<<gridReduce, blockReduce, shm_size>>>(d_alignmentx);
+    reduce<<<gridReduce, blockReduce, shm_size>>>(d_alignmenty);
+    reduce<<<gridReduce, blockReduce, shm_size>>>(d_count);
+    if(N / 1024 > 1)
+    {
+        finish_reduce<<<grid2D, block2D>>>(d_cohesionx, N / 1024);
+        finish_reduce<<<grid2D, block2D>>>(d_separationx, N / 1024);
+        finish_reduce<<<grid2D, block2D>>>(d_alignmentx, N / 1024);
+        finish_reduce<<<grid2D, block2D>>>(d_cohesiony, N / 1024);
+        finish_reduce<<<grid2D, block2D>>>(d_separationy, N / 1024);
+        finish_reduce<<<grid2D, block2D>>>(d_alignmenty, N / 1024);
+        finish_reduce<<<grid2D, block2D>>>(d_count, N / 1024);
+    }
+
+    kernel_update_velocity<<<grid2D, block2D>>>(d_x, d_y, d_vx, d_vy, d_cohesionx, d_cohesiony, d_separationx, d_separationy, d_alignmentx, d_alignmenty, d_count);
 
     kernel_normalize_velocity<<<grid2D, block2D>>>(d_vx, d_vy);
     kernel_move<<<grid2D, block2D>>>(d_x, d_y, d_vx, d_vy);
