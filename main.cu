@@ -20,21 +20,22 @@
 ////////////////////////////////////////////////////////////////////////////////
 //! Parameters
 ////////////////////////////////////////////////////////////////////////////////
-#define N 1024
+#define N 1024 * 5
 #define FISH_LENGTH 8.0f
 #define FISH_WIDTH 3.0f
 
 #define MAX_VELOCITY 1.0f
-#define MIN_VELOCITY 0.8f
+#define MIN_VELOCITY 0.4f
 
-#define MAX_ACCELERATION 0.2f
+#define MAX_ACCELERATION 0.1f
 
-#define SIGHT 10000.0f //squared
+#define SIGHT_RANGE 225.0f //squared
+#define PROTECTED_RANGE 64.0f // squared
 
-#define TURN_FACTOR 10.04f
-#define COHESTION_FACTOR 0.0f
-#define ALIGNMENT_FACTOR 0.0f
-#define SEPARATION_FACTOR 1.0f
+#define TURN_FACTOR 1.04f
+#define COHESION_FACTOR 0.1f
+#define ALIGNMENT_FACTOR 0.1f
+#define SEPARATION_FACTOR 0.1f
 ////////////////////////////////////////////////////////////////////////////////
 //! Parameters
 ////////////////////////////////////////////////////////////////////////////////
@@ -109,32 +110,33 @@ __global__ void kernel_normalize_velocity(float *vx, float *vy)
 __global__ void kernel_update_velocity(float *x, float *y, float *vx, float *vy, float *cohX, float *cohY, float *sepX, float *sepY, float *alignX, float *alignY, float *count)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    unsigned int ntid = N * tid;
 
-    if(count[tid] != 0)
+    if(count[ntid] != 0)
     {
         float tvx = vx[tid];
         float tvy = vy[tid];
 
-        int cnt = count[tid];
+        int cnt = count[ntid];
 
-        float nvx = sepX[tid] * SEPARATION_FACTOR + (alignX[tid] / cnt - tvx) * ALIGNMENT_FACTOR  + (cohX[tid] / cnt - x[tid]) * ALIGNMENT_FACTOR;
-        float nvy = sepY[tid] * SEPARATION_FACTOR + (alignY[tid] / cnt - tvy) * ALIGNMENT_FACTOR  + (cohY[tid] / cnt - y[tid]) * ALIGNMENT_FACTOR;
+        float nvx = sepX[ntid] * SEPARATION_FACTOR + (alignX[ntid] / cnt - tvx) * ALIGNMENT_FACTOR  + (cohX[ntid] / cnt - x[tid]) * COHESION_FACTOR;
+        float nvy = sepY[ntid] * SEPARATION_FACTOR + (alignY[ntid] / cnt - tvy) * ALIGNMENT_FACTOR  + (cohY[ntid] / cnt - y[tid]) * COHESION_FACTOR;
 
         float d = sqrt(nvx * nvx + nvy * nvy);
 
 
-        vx[tid] = MAX_VELOCITY / d * nvx;
-        vy[tid] = MAX_VELOCITY / d * nvy;
+        vx[tid] = tvx + MAX_ACCELERATION / d * (nvx - tvx);
+        vy[tid] = tvy + MAX_ACCELERATION / d * (nvy - tvy);
 
 
-        vx[tid] = nvx;
-        vy[tid] = nvy;
+        // vx[tid] = nvx;
+        // vy[tid] = nvy;
     }
 }
 
 __global__ void reduce(float *data)
 {
-    extern __shared__ int sdata[];
+    extern __shared__ float sdata[];
     // each thread loads one element from global to shared mem
     unsigned int tid = threadIdx.x;
     unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
@@ -174,16 +176,26 @@ __global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, fl
 
     unsigned int index = tidy * N + tidx;
 
-    if(d < SIGHT && tidx != tidy)
+    if(d < SIGHT_RANGE && tidx != tidy)
     {
-        cohX[index] = x[tidy];
-        cohY[index] = y[tidy];        
-        sepX[index] = -dx;
-        sepY[index] = -dy;
-        alignX[index] = vx[tidy];
-        alignY[index] = vy[tidy];
+        cohX[index] = x[tidx];
+        cohY[index] = y[tidx];
+        alignX[index] = vx[tidx];
+        alignY[index] = vy[tidx];
 
         count[index] = 1;
+        if(d < PROTECTED_RANGE)
+        {
+            float dsqrt = sqrt(d);
+
+            sepX[index] = dx / dsqrt;
+            sepY[index] = dy / dsqrt;
+        }
+        else
+        {
+            sepX[index] = 0;
+            sepY[index] = 0;
+        }
     }
     else
     {
@@ -272,7 +284,7 @@ void initCUDA()
     float* h_vy = new float[N];
 
     // srand(time(NULL));
-    srand(time(NULL));
+    srand(0);
 
     for(int i = 0; i < N; ++i)
     {
@@ -456,18 +468,19 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
     size_t shm_size = 1024 * sizeof(float);
 
     kernel_prepare_move<<<grid3D, block3D>>>(d_x, d_y, d_vx, d_vy, d_cohesionx, d_cohesiony, d_separationx, d_separationy, d_alignmentx, d_alignmenty, d_count);
-    //  {
+    //     {
     //     float *debug = new float[N * N];
-    //     cudaMemcpy(debug, d_count, N * N * sizeof(float), cudaMemcpyDeviceToHost);
+    //     cudaMemcpy(debug, d_alignmentx, N * N * sizeof(float), cudaMemcpyDeviceToHost);
     //     for(int i = 0; i < N; i++)
     //     {
+    //         std::cout << "start";
     //         for(int j = 0; j < N; j++)
     //         {
-    //             std::cout << i << ":" << j << "\t" << debug[i] << std::endl;
+    //             std::cout << ";" << debug[i * N + j];
     //         }
+    //         std::cout << std::endl;
     //     }
     //     delete[] debug;
-    //     exit(1);
     // }
     reduce<<<gridReduce, blockReduce, shm_size>>>(d_cohesionx);
     reduce<<<gridReduce, blockReduce, shm_size>>>(d_cohesiony);
@@ -486,10 +499,66 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
         finish_reduce<<<grid2D, block2D>>>(d_alignmenty, N / 1024);
         finish_reduce<<<grid2D, block2D>>>(d_count, N / 1024);
     }
+    // {
+    //     float *debug = new float[N * N];
+    //     float *debugX = new float[N * N];
+    //     float *debugY = new float[N * N];
+    //     cudaMemcpy(debug, d_count, N * N * sizeof(float), cudaMemcpyDeviceToHost);
+    //     cudaMemcpy(debugX, d_separationx, N * N * sizeof(float), cudaMemcpyDeviceToHost);
+    //     cudaMemcpy(debugY, d_separationx, N * N * sizeof(float), cudaMemcpyDeviceToHost);
+    //     for(int i = 0; i < N; i++)
+    //     {
+    //         // for(int j = 0; j < N; j++)
+    //         // {
+    //         //     std::cout << "1)" << i << ":" << j << ";" << debug[i * N + j] << std::endl;
+    //         // }
+    //         std::cout << i << ";" << debug[i * N] << ";" << debugX[i * N] << ";" << debugY[i * N] << std::endl;
+    //     }
+    //     delete[] debug;
+    //     delete[] debugX;
+    //     delete[] debugY;
+    //     exit(1);
+    // }
 
+    // {
+    //     float *debugX = new float[N];
+    //     float *debugY = new float[N];
+    //     cudaMemcpy(debugX, d_vx, N * sizeof(float), cudaMemcpyDeviceToHost);
+    //     cudaMemcpy(debugY, d_vy, N * sizeof(float), cudaMemcpyDeviceToHost);
+    //     for(int i = 0; i < N; i++)
+    //     {
+    //         std::cout << "0|" << i << ";" << debugX[i] << ";" << debugY[i] << std::endl;
+    //     }
+    //     delete[] debugX;
+    //     delete[] debugY;
+    // }
     kernel_update_velocity<<<grid2D, block2D>>>(d_x, d_y, d_vx, d_vy, d_cohesionx, d_cohesiony, d_separationx, d_separationy, d_alignmentx, d_alignmenty, d_count);
-
+    // {
+    //     float *debugX = new float[N];
+    //     float *debugY = new float[N];
+    //     cudaMemcpy(debugX, d_vx, N * sizeof(float), cudaMemcpyDeviceToHost);
+    //     cudaMemcpy(debugY, d_vy, N * sizeof(float), cudaMemcpyDeviceToHost);
+    //     for(int i = 0; i < N; i++)
+    //     {
+    //         std::cout << "1|" << i << ";" << debugX[i] << ";" << debugY[i] << std::endl;
+    //     }
+    //     delete[] debugX;
+    //     delete[] debugY;
+    // }
     kernel_normalize_velocity<<<grid2D, block2D>>>(d_vx, d_vy);
+    // {
+    //     float *debugX = new float[N];
+    //     float *debugY = new float[N];
+    //     cudaMemcpy(debugX, d_vx, N * sizeof(float), cudaMemcpyDeviceToHost);
+    //     cudaMemcpy(debugY, d_vy, N * sizeof(float), cudaMemcpyDeviceToHost);
+    //     for(int i = 0; i < N; i++)
+    //     {
+    //         std::cout << "2|" << i << ";" << debugX[i] << ";" << debugY[i] << std::endl;
+    //     }
+    //     delete[] debugX;
+    //     delete[] debugY;
+    //     exit(1);
+    // }
     kernel_move<<<grid2D, block2D>>>(d_x, d_y, d_vx, d_vy);
     kernel_display<<<grid2D, block2D>>>(dptr, d_x, d_y, d_vx, d_vy);
 
