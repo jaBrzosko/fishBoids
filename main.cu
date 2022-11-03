@@ -20,22 +20,23 @@
 ////////////////////////////////////////////////////////////////////////////////
 //! Parameters
 ////////////////////////////////////////////////////////////////////////////////
-#define N 1024 * 5
-#define FISH_LENGTH 8.0f
-#define FISH_WIDTH 3.0f
+#define N 1024 * 10
+#define FISH_LENGTH 4.0f
+#define FISH_WIDTH 2.8f
 
-#define MAX_VELOCITY 1.0f
-#define MIN_VELOCITY 0.4f
+#define MAX_VELOCITY 2.0f
+#define MIN_VELOCITY 0.8f
 
 #define MAX_ACCELERATION 0.1f
 
-#define SIGHT_RANGE 225.0f //squared
-#define PROTECTED_RANGE 64.0f // squared
+#define SIGHT_ANGLE 3.1415f * 0.25f
+#define SIGHT_RANGE 1600.0f //squared
+#define PROTECTED_RANGE 1000.0f // squared
 
 #define TURN_FACTOR 1.04f
 #define COHESION_FACTOR 0.1f
-#define ALIGNMENT_FACTOR 0.1f
-#define SEPARATION_FACTOR 0.1f
+#define ALIGNMENT_FACTOR 2.5f
+#define SEPARATION_FACTOR 3.5f
 ////////////////////////////////////////////////////////////////////////////////
 //! Parameters
 ////////////////////////////////////////////////////////////////////////////////
@@ -174,9 +175,15 @@ __global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, fl
 
     float d = dx * dx + dy * dy;
 
-    unsigned int index = tidy * N + tidx;
+    float tvx = vx[tidy];
+    float tvy = vy[tidy];
 
-    if(d < SIGHT_RANGE && tidx != tidy)
+    float td = tvx * tvx + tvy * tvy;
+    float dotProduct = -dx * tvx + -dy * tvy; 
+
+    unsigned int index = tidy * N + tidx;
+    
+    if(d < SIGHT_RANGE && acos(dotProduct / sqrt(d * td) ) < SIGHT_ANGLE && tidx != tidy)
     {
         cohX[index] = x[tidx];
         cohY[index] = y[tidx];
