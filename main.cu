@@ -155,8 +155,8 @@ __global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, fl
 
     if(d < SIGHT)
     {
-        correctionX[tidy * N + tidx] = vx[tidx]; //vx[tidx] + dx + x[tidx];
-        correctionY[tidy * N + tidx] = vy[tidx]; //vy[tidx] + dy + y[tidx];
+        correctionX[tidy * N + tidx] = vx[tidx] + dx; //vx[tidx] + dx + x[tidx];
+        correctionY[tidy * N + tidx] = vy[tidx] + dy; //vy[tidx] + dy + y[tidx];
 
         count[tidy * N + tidx] = 1;
     }
