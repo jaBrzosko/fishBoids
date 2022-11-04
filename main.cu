@@ -34,8 +34,8 @@
 #define PROTECTED_RANGE 400.0f // squared
 
 #define TURN_FACTOR 1.5f
-#define COHESION_FACTOR 0.0f
-#define ALIGNMENT_FACTOR 0.0f
+#define COHESION_FACTOR 1.0f
+#define ALIGNMENT_FACTOR 1.0f
 #define SEPARATION_FACTOR 2.1f
 ////////////////////////////////////////////////////////////////////////////////
 //! Parameters
