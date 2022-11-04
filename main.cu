@@ -20,23 +20,23 @@
 ////////////////////////////////////////////////////////////////////////////////
 //! Parameters
 ////////////////////////////////////////////////////////////////////////////////
-#define N 1024 * 10
+#define N 1024 * 2
 #define FISH_LENGTH 4.0f
-#define FISH_WIDTH 2.8f
+#define FISH_WIDTH 2.0f
 
 #define MAX_VELOCITY 2.0f
-#define MIN_VELOCITY 0.8f
+#define MIN_VELOCITY 1.2f
 
-#define MAX_ACCELERATION 0.1f
+#define MAX_ACCELERATION 0.5f
 
-#define SIGHT_ANGLE 3.1415f * 0.25f
-#define SIGHT_RANGE 1600.0f //squared
-#define PROTECTED_RANGE 1000.0f // squared
+#define SIGHT_ANGLE 3.1415f * 0.45f
+#define SIGHT_RANGE 900.0f //squared
+#define PROTECTED_RANGE 400.0f // squared
 
-#define TURN_FACTOR 1.04f
-#define COHESION_FACTOR 0.1f
-#define ALIGNMENT_FACTOR 2.5f
-#define SEPARATION_FACTOR 3.5f
+#define TURN_FACTOR 1.5f
+#define COHESION_FACTOR 0.0f
+#define ALIGNMENT_FACTOR 0.0f
+#define SEPARATION_FACTOR 2.1f
 ////////////////////////////////////////////////////////////////////////////////
 //! Parameters
 ////////////////////////////////////////////////////////////////////////////////
@@ -125,13 +125,50 @@ __global__ void kernel_update_velocity(float *x, float *y, float *vx, float *vy,
 
         float d = sqrt(nvx * nvx + nvy * nvy);
 
-
-        vx[tid] = tvx + MAX_ACCELERATION / d * (nvx - tvx);
-        vy[tid] = tvy + MAX_ACCELERATION / d * (nvy - tvy);
-
-
-        // vx[tid] = nvx;
-        // vy[tid] = nvy;
+        if(d > 0.001f)
+        {
+            vx[tid] = tvx + MAX_ACCELERATION / d * (nvx);
+            vy[tid] = tvy + MAX_ACCELERATION / d * (nvy);
+        }
+    }
+}
+__global__ void reduce7(float *data1, float *data2, float *data3, float *data4, float *data5, float *data6, float *data7, int size)
+{
+    extern __shared__ float sdata[];
+    // each thread loads one element from global to shared mem
+    unsigned int tid = threadIdx.x;
+    unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
+    sdata[tid] = data1[i];
+    sdata[size + tid] = data2[i];
+    sdata[2 * size + tid] = data3[i];
+    sdata[3 * size + tid] = data4[i];
+    sdata[4 * size + tid] = data5[i];
+    sdata[5 * size + tid] = data6[i];
+    sdata[6 * size + tid] = data7[i];
+    __syncthreads();
+    // do reduction in shared mem
+    for (unsigned int s=blockDim.x/2; s>0; s>>=1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+            sdata[size + tid] += sdata[size + tid + s];
+            sdata[2 * size + tid] += sdata[2 * size + tid + s];
+            sdata[3 * size + tid] += sdata[3 * size + tid + s];
+            sdata[4 * size + tid] += sdata[4 * size + tid + s];
+            sdata[5 * size + tid] += sdata[5 * size + tid + s];
+            sdata[6 * size + tid] += sdata[6 * size + tid + s];
+        }
+        __syncthreads();
+    }
+    // write result for this block to global mem
+    if (tid == 0)
+    {
+        data1[blockDim.x * blockIdx.x] = sdata[0];
+        data2[blockDim.x * blockIdx.x] = sdata[size];
+        data3[blockDim.x * blockIdx.x] = sdata[2 * size];
+        data4[blockDim.x * blockIdx.x] = sdata[3 * size];
+        data5[blockDim.x * blockIdx.x] = sdata[4 * size];
+        data6[blockDim.x * blockIdx.x] = sdata[5 * size];
+        data7[blockDim.x * blockIdx.x] = sdata[6 * size];
     }
 }
 
@@ -183,7 +220,7 @@ __global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, fl
 
     unsigned int index = tidy * N + tidx;
     
-    if(d < SIGHT_RANGE && acos(dotProduct / sqrt(d * td) ) < SIGHT_ANGLE && tidx != tidy)
+    if(d < SIGHT_RANGE && acos(dotProduct / sqrt(d * td) ) < SIGHT_ANGLE && d > 0)
     {
         cohX[index] = x[tidx];
         cohY[index] = y[tidx];
@@ -290,8 +327,8 @@ void initCUDA()
     float* h_vx = new float[N];
     float* h_vy = new float[N];
 
-    // srand(time(NULL));
-    srand(0);
+    srand(time(NULL));
+    // srand(0);
 
     for(int i = 0; i < N; ++i)
     {
@@ -489,13 +526,14 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
     //     }
     //     delete[] debug;
     // }
-    reduce<<<gridReduce, blockReduce, shm_size>>>(d_cohesionx);
-    reduce<<<gridReduce, blockReduce, shm_size>>>(d_cohesiony);
-    reduce<<<gridReduce, blockReduce, shm_size>>>(d_separationx);
-    reduce<<<gridReduce, blockReduce, shm_size>>>(d_separationy);
-    reduce<<<gridReduce, blockReduce, shm_size>>>(d_alignmentx);
-    reduce<<<gridReduce, blockReduce, shm_size>>>(d_alignmenty);
-    reduce<<<gridReduce, blockReduce, shm_size>>>(d_count);
+    reduce7<<<gridReduce, blockReduce, 7 * shm_size>>>(d_cohesionx, d_cohesiony, d_separationx, d_separationy, d_alignmentx, d_alignmenty, d_count, 1024);
+    // reduce<<<gridReduce, blockReduce, shm_size>>>(d_cohesionx);
+    // reduce<<<gridReduce, blockReduce, shm_size>>>(d_cohesiony);
+    // reduce<<<gridReduce, blockReduce, shm_size>>>(d_separationx);
+    // reduce<<<gridReduce, blockReduce, shm_size>>>(d_separationy);
+    // reduce<<<gridReduce, blockReduce, shm_size>>>(d_alignmentx);
+    // reduce<<<gridReduce, blockReduce, shm_size>>>(d_alignmenty);
+    // reduce<<<gridReduce, blockReduce, shm_size>>>(d_count);
     if(N / 1024 > 1)
     {
         finish_reduce<<<grid2D, block2D>>>(d_cohesionx, N / 1024);
