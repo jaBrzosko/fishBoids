@@ -20,21 +20,23 @@
 ////////////////////////////////////////////////////////////////////////////////
 //! Parameters
 ////////////////////////////////////////////////////////////////////////////////
-#define N 1024
-#define FISH_LENGTH 8.0f
-#define FISH_WIDTH 3.0f
+#define N 1024 * 2
+#define FISH_LENGTH 4.0f
+#define FISH_WIDTH 2.0f
 
-#define MAX_VELOCITY 1.0f
-#define MIN_VELOCITY 0.8f
+#define MAX_VELOCITY 2.0f
+#define MIN_VELOCITY 1.2f
 
-#define MAX_ACCELERATION 0.2f
+#define MAX_ACCELERATION 0.5f
 
-#define SIGHT 10000.0f //squared
+#define SIGHT_ANGLE 3.1415f * 0.45f
+#define SIGHT_RANGE 900.0f //squared
+#define PROTECTED_RANGE 400.0f // squared
 
-#define TURN_FACTOR 10.04f
-#define COHESTION_FACTOR 0.0f
+#define TURN_FACTOR 1.5f
+#define COHESION_FACTOR 0.0f
 #define ALIGNMENT_FACTOR 0.0f
-#define SEPARATION_FACTOR 1.0f
+#define SEPARATION_FACTOR 2.1f
 ////////////////////////////////////////////////////////////////////////////////
 //! Parameters
 ////////////////////////////////////////////////////////////////////////////////
@@ -109,32 +111,70 @@ __global__ void kernel_normalize_velocity(float *vx, float *vy)
 __global__ void kernel_update_velocity(float *x, float *y, float *vx, float *vy, float *cohX, float *cohY, float *sepX, float *sepY, float *alignX, float *alignY, float *count)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    unsigned int ntid = N * tid;
 
-    if(count[tid] != 0)
+    if(count[ntid] != 0)
     {
         float tvx = vx[tid];
         float tvy = vy[tid];
 
-        int cnt = count[tid];
+        int cnt = count[ntid];
 
-        float nvx = sepX[tid] * SEPARATION_FACTOR + (alignX[tid] / cnt - tvx) * ALIGNMENT_FACTOR  + (cohX[tid] / cnt - x[tid]) * ALIGNMENT_FACTOR;
-        float nvy = sepY[tid] * SEPARATION_FACTOR + (alignY[tid] / cnt - tvy) * ALIGNMENT_FACTOR  + (cohY[tid] / cnt - y[tid]) * ALIGNMENT_FACTOR;
+        float nvx = sepX[ntid] * SEPARATION_FACTOR + (alignX[ntid] / cnt - tvx) * ALIGNMENT_FACTOR  + (cohX[ntid] / cnt - x[tid]) * COHESION_FACTOR;
+        float nvy = sepY[ntid] * SEPARATION_FACTOR + (alignY[ntid] / cnt - tvy) * ALIGNMENT_FACTOR  + (cohY[ntid] / cnt - y[tid]) * COHESION_FACTOR;
 
         float d = sqrt(nvx * nvx + nvy * nvy);
 
-
-        vx[tid] = MAX_VELOCITY / d * nvx;
-        vy[tid] = MAX_VELOCITY / d * nvy;
-
-
-        vx[tid] = nvx;
-        vy[tid] = nvy;
+        if(d > 0.001f)
+        {
+            vx[tid] = tvx + MAX_ACCELERATION / d * (nvx);
+            vy[tid] = tvy + MAX_ACCELERATION / d * (nvy);
+        }
+    }
+}
+__global__ void reduce7(float *data1, float *data2, float *data3, float *data4, float *data5, float *data6, float *data7, int size)
+{
+    extern __shared__ float sdata[];
+    // each thread loads one element from global to shared mem
+    unsigned int tid = threadIdx.x;
+    unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
+    sdata[tid] = data1[i];
+    sdata[size + tid] = data2[i];
+    sdata[2 * size + tid] = data3[i];
+    sdata[3 * size + tid] = data4[i];
+    sdata[4 * size + tid] = data5[i];
+    sdata[5 * size + tid] = data6[i];
+    sdata[6 * size + tid] = data7[i];
+    __syncthreads();
+    // do reduction in shared mem
+    for (unsigned int s=blockDim.x/2; s>0; s>>=1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+            sdata[size + tid] += sdata[size + tid + s];
+            sdata[2 * size + tid] += sdata[2 * size + tid + s];
+            sdata[3 * size + tid] += sdata[3 * size + tid + s];
+            sdata[4 * size + tid] += sdata[4 * size + tid + s];
+            sdata[5 * size + tid] += sdata[5 * size + tid + s];
+            sdata[6 * size + tid] += sdata[6 * size + tid + s];
+        }
+        __syncthreads();
+    }
+    // write result for this block to global mem
+    if (tid == 0)
+    {
+        data1[blockDim.x * blockIdx.x] = sdata[0];
+        data2[blockDim.x * blockIdx.x] = sdata[size];
+        data3[blockDim.x * blockIdx.x] = sdata[2 * size];
+        data4[blockDim.x * blockIdx.x] = sdata[3 * size];
+        data5[blockDim.x * blockIdx.x] = sdata[4 * size];
+        data6[blockDim.x * blockIdx.x] = sdata[5 * size];
+        data7[blockDim.x * blockIdx.x] = sdata[6 * size];
     }
 }
 
 __global__ void reduce(float *data)
 {
-    extern __shared__ int sdata[];
+    extern __shared__ float sdata[];
     // each thread loads one element from global to shared mem
     unsigned int tid = threadIdx.x;
     unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
@@ -172,18 +212,34 @@ __global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, fl
 
     float d = dx * dx + dy * dy;
 
-    unsigned int index = tidy * N + tidx;
+    float tvx = vx[tidy];
+    float tvy = vy[tidy];
 
-    if(d < SIGHT && tidx != tidy)
+    float td = tvx * tvx + tvy * tvy;
+    float dotProduct = -dx * tvx + -dy * tvy; 
+
+    unsigned int index = tidy * N + tidx;
+    
+    if(d < SIGHT_RANGE && acos(dotProduct / sqrt(d * td) ) < SIGHT_ANGLE && d > 0)
     {
-        cohX[index] = x[tidy];
-        cohY[index] = y[tidy];        
-        sepX[index] = -dx;
-        sepY[index] = -dy;
-        alignX[index] = vx[tidy];
-        alignY[index] = vy[tidy];
+        cohX[index] = x[tidx];
+        cohY[index] = y[tidx];
+        alignX[index] = vx[tidx];
+        alignY[index] = vy[tidx];
 
         count[index] = 1;
+        if(d < PROTECTED_RANGE)
+        {
+            float dsqrt = sqrt(d);
+
+            sepX[index] = dx / dsqrt;
+            sepY[index] = dy / dsqrt;
+        }
+        else
+        {
+            sepX[index] = 0;
+            sepY[index] = 0;
+        }
     }
     else
     {
@@ -271,8 +327,8 @@ void initCUDA()
     float* h_vx = new float[N];
     float* h_vy = new float[N];
 
-    // srand(time(NULL));
     srand(time(NULL));
+    // srand(0);
 
     for(int i = 0; i < N; ++i)
     {
@@ -456,26 +512,28 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
     size_t shm_size = 1024 * sizeof(float);
 
     kernel_prepare_move<<<grid3D, block3D>>>(d_x, d_y, d_vx, d_vy, d_cohesionx, d_cohesiony, d_separationx, d_separationy, d_alignmentx, d_alignmenty, d_count);
-    //  {
+    //     {
     //     float *debug = new float[N * N];
-    //     cudaMemcpy(debug, d_count, N * N * sizeof(float), cudaMemcpyDeviceToHost);
+    //     cudaMemcpy(debug, d_alignmentx, N * N * sizeof(float), cudaMemcpyDeviceToHost);
     //     for(int i = 0; i < N; i++)
     //     {
+    //         std::cout << "start";
     //         for(int j = 0; j < N; j++)
     //         {
-    //             std::cout << i << ":" << j << "\t" << debug[i] << std::endl;
+    //             std::cout << ";" << debug[i * N + j];
     //         }
+    //         std::cout << std::endl;
     //     }
     //     delete[] debug;
-    //     exit(1);
     // }
-    reduce<<<gridReduce, blockReduce, shm_size>>>(d_cohesionx);
-    reduce<<<gridReduce, blockReduce, shm_size>>>(d_cohesiony);
-    reduce<<<gridReduce, blockReduce, shm_size>>>(d_separationx);
-    reduce<<<gridReduce, blockReduce, shm_size>>>(d_separationy);
-    reduce<<<gridReduce, blockReduce, shm_size>>>(d_alignmentx);
-    reduce<<<gridReduce, blockReduce, shm_size>>>(d_alignmenty);
-    reduce<<<gridReduce, blockReduce, shm_size>>>(d_count);
+    reduce7<<<gridReduce, blockReduce, 7 * shm_size>>>(d_cohesionx, d_cohesiony, d_separationx, d_separationy, d_alignmentx, d_alignmenty, d_count, 1024);
+    // reduce<<<gridReduce, blockReduce, shm_size>>>(d_cohesionx);
+    // reduce<<<gridReduce, blockReduce, shm_size>>>(d_cohesiony);
+    // reduce<<<gridReduce, blockReduce, shm_size>>>(d_separationx);
+    // reduce<<<gridReduce, blockReduce, shm_size>>>(d_separationy);
+    // reduce<<<gridReduce, blockReduce, shm_size>>>(d_alignmentx);
+    // reduce<<<gridReduce, blockReduce, shm_size>>>(d_alignmenty);
+    // reduce<<<gridReduce, blockReduce, shm_size>>>(d_count);
     if(N / 1024 > 1)
     {
         finish_reduce<<<grid2D, block2D>>>(d_cohesionx, N / 1024);
@@ -486,10 +544,66 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
         finish_reduce<<<grid2D, block2D>>>(d_alignmenty, N / 1024);
         finish_reduce<<<grid2D, block2D>>>(d_count, N / 1024);
     }
+    // {
+    //     float *debug = new float[N * N];
+    //     float *debugX = new float[N * N];
+    //     float *debugY = new float[N * N];
+    //     cudaMemcpy(debug, d_count, N * N * sizeof(float), cudaMemcpyDeviceToHost);
+    //     cudaMemcpy(debugX, d_separationx, N * N * sizeof(float), cudaMemcpyDeviceToHost);
+    //     cudaMemcpy(debugY, d_separationx, N * N * sizeof(float), cudaMemcpyDeviceToHost);
+    //     for(int i = 0; i < N; i++)
+    //     {
+    //         // for(int j = 0; j < N; j++)
+    //         // {
+    //         //     std::cout << "1)" << i << ":" << j << ";" << debug[i * N + j] << std::endl;
+    //         // }
+    //         std::cout << i << ";" << debug[i * N] << ";" << debugX[i * N] << ";" << debugY[i * N] << std::endl;
+    //     }
+    //     delete[] debug;
+    //     delete[] debugX;
+    //     delete[] debugY;
+    //     exit(1);
+    // }
 
+    // {
+    //     float *debugX = new float[N];
+    //     float *debugY = new float[N];
+    //     cudaMemcpy(debugX, d_vx, N * sizeof(float), cudaMemcpyDeviceToHost);
+    //     cudaMemcpy(debugY, d_vy, N * sizeof(float), cudaMemcpyDeviceToHost);
+    //     for(int i = 0; i < N; i++)
+    //     {
+    //         std::cout << "0|" << i << ";" << debugX[i] << ";" << debugY[i] << std::endl;
+    //     }
+    //     delete[] debugX;
+    //     delete[] debugY;
+    // }
     kernel_update_velocity<<<grid2D, block2D>>>(d_x, d_y, d_vx, d_vy, d_cohesionx, d_cohesiony, d_separationx, d_separationy, d_alignmentx, d_alignmenty, d_count);
-
+    // {
+    //     float *debugX = new float[N];
+    //     float *debugY = new float[N];
+    //     cudaMemcpy(debugX, d_vx, N * sizeof(float), cudaMemcpyDeviceToHost);
+    //     cudaMemcpy(debugY, d_vy, N * sizeof(float), cudaMemcpyDeviceToHost);
+    //     for(int i = 0; i < N; i++)
+    //     {
+    //         std::cout << "1|" << i << ";" << debugX[i] << ";" << debugY[i] << std::endl;
+    //     }
+    //     delete[] debugX;
+    //     delete[] debugY;
+    // }
     kernel_normalize_velocity<<<grid2D, block2D>>>(d_vx, d_vy);
+    // {
+    //     float *debugX = new float[N];
+    //     float *debugY = new float[N];
+    //     cudaMemcpy(debugX, d_vx, N * sizeof(float), cudaMemcpyDeviceToHost);
+    //     cudaMemcpy(debugY, d_vy, N * sizeof(float), cudaMemcpyDeviceToHost);
+    //     for(int i = 0; i < N; i++)
+    //     {
+    //         std::cout << "2|" << i << ";" << debugX[i] << ";" << debugY[i] << std::endl;
+    //     }
+    //     delete[] debugX;
+    //     delete[] debugY;
+    //     exit(1);
+    // }
     kernel_move<<<grid2D, block2D>>>(d_x, d_y, d_vx, d_vy);
     kernel_display<<<grid2D, block2D>>>(dptr, d_x, d_y, d_vx, d_vy);
 
