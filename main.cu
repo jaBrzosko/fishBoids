@@ -20,7 +20,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 //! Parameters
 ////////////////////////////////////////////////////////////////////////////////
-#define N 1024 * 2
+#define N 1024 * 4
 #define FISH_LENGTH 4.0f
 #define FISH_WIDTH 2.0f
 
@@ -35,7 +35,7 @@
 
 #define TURN_FACTOR 1.5f
 #define COHESION_FACTOR 1.0f
-#define ALIGNMENT_FACTOR 1.0f
+#define ALIGNMENT_FACTOR 5.0f
 #define SEPARATION_FACTOR 2.1f
 ////////////////////////////////////////////////////////////////////////////////
 //! Parameters
@@ -127,8 +127,8 @@ __global__ void kernel_update_velocity(float *x, float *y, float *vx, float *vy,
 
         if(d > 0.001f)
         {
-            vx[tid] = tvx + MAX_ACCELERATION / d * (nvx);
-            vy[tid] = tvy + MAX_ACCELERATION / d * (nvy);
+            vx[tid] = tvx + MAX_ACCELERATION / d * nvx;
+            vy[tid] = tvy + MAX_ACCELERATION / d * nvy;
         }
     }
 }
@@ -215,12 +215,9 @@ __global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, fl
     float tvx = vx[tidy];
     float tvy = vy[tidy];
 
-    float td = tvx * tvx + tvy * tvy;
-    float dotProduct = -dx * tvx + -dy * tvy; 
-
     unsigned int index = tidy * N + tidx;
     
-    if(d < SIGHT_RANGE && acos(dotProduct / sqrt(d * td) ) < SIGHT_ANGLE && d > 0)
+    if(d < SIGHT_RANGE && acos((-dx * tvx + -dy * tvy) / sqrt(d * (tvx * tvx + tvy * tvy)) ) < SIGHT_ANGLE && d > 0)
     {
         cohX[index] = x[tidx];
         cohY[index] = y[tidx];
@@ -527,13 +524,6 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
     //     delete[] debug;
     // }
     reduce7<<<gridReduce, blockReduce, 7 * shm_size>>>(d_cohesionx, d_cohesiony, d_separationx, d_separationy, d_alignmentx, d_alignmenty, d_count, 1024);
-    // reduce<<<gridReduce, blockReduce, shm_size>>>(d_cohesionx);
-    // reduce<<<gridReduce, blockReduce, shm_size>>>(d_cohesiony);
-    // reduce<<<gridReduce, blockReduce, shm_size>>>(d_separationx);
-    // reduce<<<gridReduce, blockReduce, shm_size>>>(d_separationy);
-    // reduce<<<gridReduce, blockReduce, shm_size>>>(d_alignmentx);
-    // reduce<<<gridReduce, blockReduce, shm_size>>>(d_alignmenty);
-    // reduce<<<gridReduce, blockReduce, shm_size>>>(d_count);
     if(N / 1024 > 1)
     {
         finish_reduce<<<grid2D, block2D>>>(d_cohesionx, N / 1024);
@@ -619,6 +609,23 @@ void keyboard(unsigned char key, int /*x*/, int /*y*/)
     switch (key)
     {
         case (27) :
+            {
+                float *debug = new float[N * N];
+                float *debugX = new float[N * N];
+                float *debugY = new float[N * N];
+                cudaMemcpy(debug, d_count, N * N * sizeof(float), cudaMemcpyDeviceToHost);
+                for(int i = 0; i < N; i++)
+                {
+                    for(int j = 0; j < N; j++)
+                    {
+                        std::cout << ":" << debug[i * N + j];
+                    }
+                    std::cout << std::endl;
+                }
+                delete[] debug;
+                delete[] debugX;
+                delete[] debugY;
+            }
             #if defined(__APPLE__) || defined(MACOSX)
                 exit(EXIT_SUCCESS);
             #else
