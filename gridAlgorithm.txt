@@ -1,0 +1,48 @@
+When determining which cell is particle's:
+column = x (or y, idk) (in 0 to width) divided (flat) by grid cell size
+width = y (or x, idk) (in 0 to height) divided (flat) by grid cell size
+
+or probably ID from 0 to n^2 - 1
+
+foreach fish in fishes in parallel (one thread per fish):
+- calculate cell column and width
+- gridCell[fish.ID] = cell.ID
+- gridFish[fish.ID] = fish.ID
+
+############
+# struct grid
+# {
+#   cell = new int[N];
+#   fish = new int[N];
+#   cellStart = new int[GRID_SIZE]; // probably GRID_SIZE * GRID_SIZE
+# };
+###########
+
+Sort grid (cell and fish) by cell.ID -> many repeating values probably
+
+
+Somehow mark start of each cell in grid->cellStart. Probably should use -1 when there are no fishes in given cell
+
+for i in range(0, N) in parallel:
+
+
+cell_width = screen_width / GRID_SIZE
+cell_height = screen_heigt / GRID_SIZE
+
+Ok. Just so I don't forget. I have working (probably working) grid separation. 
+Now we have to make fishes go one fish per thread and then check only surrounding cells instead of whole sea
+Also we won't be needing accumulators anymore, they will be calculated in this ^ thread.
+I will have to do something like
+myCell = row * GRID_SIZE + column;
+for i in range(cellStart[myCell], cellStart[myCell + 1])
+  ...
+BUT what if next cell is empty? I should just walk upper limit until I hit another non-empty cell.
+Also it ain't so straightforward since we have to check all neighboring cells (8). So to make any use there should be definately more than 16 cells.
+Also I don't need cudaMemset since I can check for inequality with 0 since no cell will end with zero.
+I should check brute way so:
+
+for 8 neighbors:
+   foreach fish in this neighbor:
+      ...
+
+or more CUDA way with 8 times as much threads (second dimension for neighbor direction)
