@@ -22,7 +22,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 //! Parameters
 ////////////////////////////////////////////////////////////////////////////////
-#define N 1024 * 10
+#define N 1024 * 4
 #define GRID_SIZE 8
 #define GRID_RANGE 1    
 #define FISH_LENGTH 4.0f
@@ -30,16 +30,16 @@
 
 #define MAX_VELOCITY 2.0f
 #define MIN_VELOCITY 1.2f
-#define MAX_ACCELERATION 1.5f
+#define MAX_ACCELERATION 0.5f
 
-#define SIGHT_ANGLE 3.1415f * 0.75f
+#define SIGHT_ANGLE 3.1415f * 0.45f
 #define SIGHT_RANGE 900.0f //squared
 #define PROTECTED_RANGE 400.0f // squared
 
 #define TURN_FACTOR 1.5f
-#define COHESION_FACTOR 5.0f
-#define ALIGNMENT_FACTOR 2.0f
-#define SEPARATION_FACTOR 4.1f
+#define COHESION_FACTOR 4.0f
+#define ALIGNMENT_FACTOR 4.0f
+#define SEPARATION_FACTOR 4.0f
 ////////////////////////////////////////////////////////////////////////////////
 //! Parameters
 ////////////////////////////////////////////////////////////////////////////////
@@ -47,8 +47,8 @@
 #define mapRange(a1,a2,b1,b2,s) (b1 + (s-a1)*(b2-b1)/(a2-a1))
 
 // constants
-const int window_width  = 800;
-const int window_height = 800;
+const int window_width  = 1000;
+const int window_height = 1000;
 
 const int sea_width    = window_width / 2;
 const int sea_height   = window_height / 2;
@@ -146,8 +146,12 @@ __global__ void kernel_update_velocity(float *x, float *y, float *vx, float *vy,
 
         int cnt = count[tid];
 
-        float nvx = sepX[tid] * SEPARATION_FACTOR + (alignX[tid] / cnt - tvx) * ALIGNMENT_FACTOR  + (cohX[tid] / cnt - x[tid]) * COHESION_FACTOR;
-        float nvy = sepY[tid] * SEPARATION_FACTOR + (alignY[tid] / cnt - tvy) * ALIGNMENT_FACTOR  + (cohY[tid] / cnt - y[tid]) * COHESION_FACTOR;
+        float nvx = sepX[tid] * SEPARATION_FACTOR +
+         (alignX[tid] / cnt - tvx) * ALIGNMENT_FACTOR + 
+         (cohX[tid] / cnt - x[tid]) * COHESION_FACTOR;
+        float nvy = sepY[tid] * SEPARATION_FACTOR + 
+         (alignY[tid] / cnt - tvy) * ALIGNMENT_FACTOR + 
+         (cohY[tid] / cnt - y[tid]) * COHESION_FACTOR;
 
         float d = sqrt(nvx * nvx + nvy * nvy);
 
@@ -192,25 +196,6 @@ __global__ void prepareStartEndCell(int* cellStart, int* startCell, int* endCell
     endCell[tid] = endPos == GRID_SIZE * GRID_SIZE ? N : cellStart[endPos];
 }
 
-__global__ void reduce(float *data)
-{
-    extern __shared__ float sdata[];
-    // each thread loads one element from global to shared mem
-    unsigned int tid = threadIdx.x;
-    unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
-    sdata[tid] = data[i];
-    __syncthreads();
-    // do reduction in shared mem
-    for (unsigned int s=blockDim.x/2; s>0; s>>=1) {
-        if (tid < s) {
-            sdata[tid] += sdata[tid + s];
-        }
-        __syncthreads();
-    }
-    // write result for this block to global mem
-    if (tid == 0) data[blockDim.x * blockIdx.x] = sdata[0];
-}
-
 __device__ void make_move_for_row(float *x, float *y, float *vx, float *vy, float *cohX, float *cohY, float *sepX, float *sepY, float *alignX, float *alignY, float *count, int* gridFish, int* cellStart, int tid, int cell, int* startCell, int* endCell)
 {
     int startPos = startCell[cell];
@@ -236,17 +221,16 @@ __device__ void make_move_for_row(float *x, float *y, float *vx, float *vy, floa
         {
             l_cohesionX += x[another];
             l_cohesionY += y[another];
-            l_separationX += vx[another];
-            l_separationY += vy[another];
+            l_alignemntX += vx[another];
+            l_alignemntY += vy[another];
+
+            float dsqrt = sqrt(d);
+
+            l_separationX += dx / dsqrt;
+            l_separationY += dy / dsqrt;
 
             l_count += 1;
-            if(d < PROTECTED_RANGE)
-            {
-                float dsqrt = sqrt(d);
 
-                l_separationX += dx / dsqrt;
-                l_separationY += dy / dsqrt;
-            }
         }
     }
 
@@ -262,9 +246,10 @@ __device__ void make_move_for_row(float *x, float *y, float *vx, float *vy, floa
     }
 }
 
-__global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, float *cohX, float *cohY, float *sepX, float *sepY, float *alignX, float *alignY, float *count, int* gridFish, int* cellStart, int* startCell, int* endCell)
+__global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, float *cohX, float *cohY, float *sepX, float *sepY, float *alignX, float *alignY, float *count, int* gridFish, int* cellStart, int* startCell, int* endCell, int* gridCell)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    int cell = gridCell[tid];
     tid = gridFish[tid];
     // reset accumulators
     cohX[tid] = 0;
@@ -274,7 +259,7 @@ __global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, fl
     sepX[tid] = 0;
     sepY[tid] = 0;
     count[tid] = 0;
-    int cell = max(min((int)((x[tid] + sea_width) / cell_width + (y[tid] + sea_height) / cell_height * GRID_SIZE), GRID_SIZE * GRID_SIZE - 1), 0);
+    //int cell = max(min((int)((x[tid] + sea_width) / cell_width + (y[tid] + sea_height) / cell_height * GRID_SIZE), GRID_SIZE * GRID_SIZE - 1), 0);
     
     for(int i = -GRID_RANGE; i <= GRID_RANGE; i++)
     {
@@ -583,7 +568,7 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
     //     }
     //     exit(1);
     // }
-    kernel_prepare_move<<<grid2D, block2D>>>(d_x, d_y, d_vx, d_vy, d_cohesionx, d_cohesiony, d_separationx, d_separationy, d_alignmentx, d_alignmenty, d_count, d_gridFish, d_gridCell, d_startCell, d_endCell);
+    kernel_prepare_move<<<grid2D, block2D>>>(d_x, d_y, d_vx, d_vy, d_cohesionx, d_cohesiony, d_separationx, d_separationy, d_alignmentx, d_alignmenty, d_count, d_gridFish, d_gridCell, d_startCell, d_endCell, d_gridCell);
     // {
     //     float* debug = new float[N];
     //     cudaMemcpy(debug, d_count, N * sizeof(float), cudaMemcpyDeviceToHost);
