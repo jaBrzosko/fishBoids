@@ -24,23 +24,22 @@
 ////////////////////////////////////////////////////////////////////////////////
 #define N 1024 * 10
 #define GRID_SIZE 8
-#define GRID_RANGE 1
+#define GRID_RANGE 1    
 #define FISH_LENGTH 4.0f
 #define FISH_WIDTH 2.0f
 
 #define MAX_VELOCITY 2.0f
 #define MIN_VELOCITY 1.2f
+#define MAX_ACCELERATION 1.5f
 
-#define MAX_ACCELERATION 0.5f
-
-#define SIGHT_ANGLE 3.1415f * 0.45f
+#define SIGHT_ANGLE 3.1415f * 0.75f
 #define SIGHT_RANGE 900.0f //squared
 #define PROTECTED_RANGE 400.0f // squared
 
 #define TURN_FACTOR 1.5f
-#define COHESION_FACTOR 1.0f
-#define ALIGNMENT_FACTOR 5.0f
-#define SEPARATION_FACTOR 2.1f
+#define COHESION_FACTOR 5.0f
+#define ALIGNMENT_FACTOR 2.0f
+#define SEPARATION_FACTOR 4.1f
 ////////////////////////////////////////////////////////////////////////////////
 //! Parameters
 ////////////////////////////////////////////////////////////////////////////////
@@ -261,13 +260,12 @@ __device__ void make_move_for_row(float *x, float *y, float *vx, float *vy, floa
         sepY[tid] = sepY[tid] + l_separationY;
         count[tid] = count[tid] + l_count;
     }
-    count[tid] = endPos - startPos;
 }
 
 __global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, float *cohX, float *cohY, float *sepX, float *sepY, float *alignX, float *alignY, float *count, int* gridFish, int* cellStart, int* startCell, int* endCell)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
-
+    tid = gridFish[tid];
     // reset accumulators
     cohX[tid] = 0;
     cohY[tid] = 0;
