@@ -32,12 +32,12 @@
 #define MIN_VELOCITY 1.2f
 #define MAX_ACCELERATION 0.5f
 
-#define SIGHT_ANGLE 3.1415f * 0.45f
+#define SIGHT_ANGLE 3.1415f * 0.55f
 #define SIGHT_RANGE 900.0f //squared
 #define PROTECTED_RANGE 400.0f // squared
 
 #define TURN_FACTOR 1.5f
-#define COHESION_FACTOR 4.0f
+#define COHESION_FACTOR 2.0f
 #define ALIGNMENT_FACTOR 4.0f
 #define SEPARATION_FACTOR 4.0f
 ////////////////////////////////////////////////////////////////////////////////
