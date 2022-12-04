@@ -167,7 +167,7 @@ __global__ void prepareStartEndCell(int* cellStart, int* startCell, int* endCell
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
 
-    if(tid > GRID_SIZE * GRID_SIZE)
+    if(tid >= GRID_SIZE * GRID_SIZE)
         return;
 
     int startPos = tid - GRID_RANGE;
@@ -184,9 +184,9 @@ __global__ void prepareStartEndCell(int* cellStart, int* startCell, int* endCell
     if(endPos >= GRID_SIZE * GRID_SIZE)
         endPos = GRID_SIZE * GRID_SIZE;
 
-    while(cellStart[startPos] == -1 && startPos < GRID_SIZE * GRID_SIZE)
+    while(startPos < GRID_SIZE * GRID_SIZE && cellStart[startPos] == -1)
         startPos++;
-    while(cellStart[endPos] == -1 && endPos < GRID_SIZE * GRID_SIZE)
+    while(endPos < GRID_SIZE * GRID_SIZE && cellStart[endPos] == -1)
         endPos++;
     
 
