@@ -22,22 +22,21 @@
 ////////////////////////////////////////////////////////////////////////////////
 //! Parameters
 ////////////////////////////////////////////////////////////////////////////////
-#define N 1024 * 4
-#define GRID_SIZE 8
+#define N 1024 * 20
+#define GRID_SIZE 20
 #define GRID_RANGE 1    
-#define FISH_LENGTH 4.0f
-#define FISH_WIDTH 2.0f
+#define FISH_LENGTH 8.0f
+#define FISH_WIDTH 4.0f
 
-#define MAX_VELOCITY 2.0f
-#define MIN_VELOCITY 1.2f
-#define MAX_ACCELERATION 0.5f
+#define MAX_VELOCITY 5.0f
+#define MIN_VELOCITY 4.2f
+#define MAX_ACCELERATION 1.0f
 
 #define SIGHT_ANGLE 3.1415f * 0.55f
 #define SIGHT_RANGE 900.0f //squared
-#define PROTECTED_RANGE 400.0f // squared
 
-#define TURN_FACTOR 1.5f
-#define COHESION_FACTOR 2.0f
+#define TURN_FACTOR 10.5f
+#define COHESION_FACTOR 4.0f
 #define ALIGNMENT_FACTOR 4.0f
 #define SEPARATION_FACTOR 4.0f
 ////////////////////////////////////////////////////////////////////////////////
@@ -68,8 +67,8 @@ void *d_vbo_buffer = NULL;
 
 int mouse_old_x, mouse_old_y;
 int mouse_buttons = 0;
-float rotate_x = 0.0, rotate_y = 0.0;
-float translate_z = -1.0;
+float rotate_x = 35, rotate_y = 35;
+float translate_z = -2.0;
 
 int fpsCount = 0;        // FPS count for averaging
 int fpsLimit = 1;        // FPS limit for sampling
@@ -117,26 +116,30 @@ __global__ void prepareCellStart(int* gridCell, int* cellStart)
 }
 
 
-__global__ void kernel_normalize_velocity(float *vx, float *vy, float *fvx, float *fvy)
+__global__ void kernel_normalize_velocity(float *vx, float *vy, float *vz, float *fvx, float *fvy, float *fvz)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
     
     float tvx = fvx[tid];
     float tvy = fvy[tid];
+    float tvz = fvz[tid];
     
-    float speed = sqrt(tvx * tvx + tvy * tvy);
+    float speed = sqrt(tvx * tvx + tvy * tvy + tvz * tvz);
     if(speed > MAX_VELOCITY)
     {
         tvx = MAX_VELOCITY * tvx / speed;
         tvy = MAX_VELOCITY * tvy / speed;
+        tvz = MAX_VELOCITY * tvz / speed;
     }
     else if(speed < MIN_VELOCITY)
     {
         tvx = MIN_VELOCITY * tvx / speed;
         tvy = MIN_VELOCITY * tvy / speed;
+        tvz = MIN_VELOCITY * tvz / speed;
     }
     vx[tid] = tvx;
     vy[tid] = tvy;
+    vz[tid] = tvz;
 }
 
 __global__ void prepareStartEndCell(int* cellStart, int* startCell, int* endCell)
@@ -172,7 +175,9 @@ __global__ void prepareStartEndCell(int* cellStart, int* startCell, int* endCell
     endCell[tid] = endPos == GRID_SIZE * GRID_SIZE ? N : cellStart[endPos];
 }
 
-__global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, float *fvx, float *fvy,
+__global__ void kernel_prepare_move(float *x, float *y, float *z, 
+        float *vx, float *vy, float *vz,
+        float *fvx, float *fvy, float * fvz,
         int* gridFish, int* startCell, int* endCell, int* gridCell)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -180,17 +185,19 @@ __global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, fl
     tid = gridFish[tid];
 
     // prepare accumulators
-    float l_cohesionX = 0, l_cohesionY = 0;
-    float l_alignementX = 0, l_alignementY = 0;
-    float l_separationX = 0, l_separationY = 0;
+    float l_cohesionX = 0, l_cohesionY = 0, l_cohesionZ = 0;
+    float l_alignementX = 0, l_alignementY = 0, l_alignementZ = 0;
+    float l_separationX = 0, l_separationY = 0, l_separationZ = 0;
     float l_count = 0;
 
     // prepare variables
     float tvx = vx[tid];
     float tvy = vy[tid];
+    float tvz = vz[tid];
 
     float tx = x[tid];
     float ty = y[tid];
+    float tz = z[tid];
 
     for(int i = -GRID_RANGE; i <= GRID_RANGE; i++)
     {
@@ -205,23 +212,29 @@ __global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, fl
                 int another = gridFish[i];
                 float ax = x[another];
                 float ay = y[another];
+                float az = z[another];
 
                 float dx = tx - ax;
                 float dy = ty - ay;
+                float dz = tz - az;
 
-                float d = dx * dx + dy * dy;
+                float d = dx * dx + dy * dy + dz * dz;
                 
-                if(d < SIGHT_RANGE && d > 0 && acos((-dx * tvx + -dy * tvy) / sqrt(d * (tvx * tvx + tvy * tvy)) ) < SIGHT_ANGLE)
+                if(d < SIGHT_RANGE && d > 0 && acos((-dx * tvx + -dy * tvy + -dz * tvz) / sqrt(d * (tvx * tvx + tvy * tvy + tvz * tvz)) ) < SIGHT_ANGLE)
                 {
                     l_cohesionX += ax;
                     l_cohesionY += ay;
+                    l_cohesionZ += az;
+
                     l_alignementX += vx[another];
                     l_alignementY += vy[another];
+                    l_alignementZ += vz[another];
 
                     float dsqrt = sqrt(d);
 
                     l_separationX += dx / dsqrt;
                     l_separationY += dy / dsqrt;
+                    l_separationZ += dz / dsqrt;
 
                     l_count += 1;
 
@@ -238,22 +251,27 @@ __global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, fl
         float nvy = l_separationY * SEPARATION_FACTOR + 
          (l_alignementY / l_count - tvy) * ALIGNMENT_FACTOR + 
          (l_cohesionY / l_count - ty) * COHESION_FACTOR;
+        float nvz = l_separationZ * SEPARATION_FACTOR + 
+         (l_alignementZ / l_count - tvz) * ALIGNMENT_FACTOR + 
+         (l_cohesionZ / l_count - tz) * COHESION_FACTOR;
 
-        float d = sqrt(nvx * nvx + nvy * nvy);
+        float d = sqrt(nvx * nvx + nvy * nvy + nvz * nvz);
 
         if(d > 0.001f)
         {
             fvx[tid] = tvx + MAX_ACCELERATION / d * nvx;
             fvy[tid] = tvy + MAX_ACCELERATION / d * nvy;
+            fvz[tid] = tvz + MAX_ACCELERATION / d * nvz;
         }
     }
 }
 
-__global__ void kernel_move(float *x, float *y, float *vx, float *vy)
+__global__ void kernel_move(float *x, float *y, float *z, float *vx, float *vy, float *vz)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
     float nx = x[tid] + vx[tid];
     float ny = y[tid] + vy[tid];
+    float nz = z[tid] + vz[tid];
 
     // repair X velocity
     if(nx < -sea_width)
@@ -265,39 +283,54 @@ __global__ void kernel_move(float *x, float *y, float *vx, float *vy)
         vy[tid] = vy[tid] + TURN_FACTOR;
     else if(ny > sea_height)
         vy[tid] = vy[tid] - TURN_FACTOR;
-    x[tid] = nx;
-    y[tid] = ny;
-    
+    if(nz < -sea_depth)
+        vz[tid] = vz[tid] + TURN_FACTOR;
+    else if(nz > sea_depth)
+        vz[tid] = vz[tid] - TURN_FACTOR;
+    x[tid] = x[tid] + vx[tid];
+    y[tid] = y[tid] + vy[tid];
+    z[tid] = z[tid] + vz[tid];
 }
 
 
-__global__ void kernel_display(float *pos, float *x, float *y, float *vx, float *vy)
+__global__ void kernel_display(float *pos, float *x, float *y, float *z, float *vx, float *vy, float *vz)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
-    float p1X = x[tid];
-    float p1Y = y[tid];
 
     float tvx = vx[tid];
     float tvy = vy[tid];
+    float tvz = vz[tid];
 
-    float coef = FISH_LENGTH / sqrt(tvx * tvx + tvy * tvy);
+    float coef = FISH_LENGTH / sqrt(tvx * tvx + tvy * tvy + tvz * tvz);
     float tempX = coef * tvx;
     float tempY = coef * tvy;
+    float tempZ = coef * tvz;
 
-    float p2X = p1X - tempX - tempY * FISH_WIDTH / FISH_LENGTH;
-    float p2Y = p1Y - tempY + tempX * FISH_WIDTH / FISH_LENGTH;
-    float p3X = p1X - tempX + tempY * FISH_WIDTH / FISH_LENGTH;
-    float p3Y = p1Y - tempY - tempX * FISH_WIDTH / FISH_LENGTH;
+    float p1X = x[tid];
+    float p1Y = y[tid];
+    float p1Z = z[tid];
+
+    float p2X = p1X;
+    float p2Y = p1Y + tempZ * FISH_WIDTH / FISH_LENGTH;
+    float p2Z = p1Z - tempY * FISH_WIDTH / FISH_LENGTH;
+
+    float p3X = p1X;
+    float p3Y = p1Y - tempZ * FISH_WIDTH / FISH_LENGTH;
+    float p3Z = p1Z + tempY * FISH_WIDTH / FISH_LENGTH;
+
+    p1X += tempX;
+    p1Y += tempY;
+    p1Z += tempZ;
 
     pos[9 * tid] = p1X / window_width;
     pos[9 * tid + 1] = p1Y / window_height;
-    pos[9 * tid + 2] = 0.0f;
+    pos[9 * tid + 2] = p1Z / window_depth;
     pos[9 * tid + 3] = p2X / window_width;
     pos[9 * tid + 4] = p2Y / window_height;
-    pos[9 * tid + 5] = 0.0f;    
+    pos[9 * tid + 5] = p2Z / window_depth;
     pos[9 * tid + 6] = p3X / window_width;
     pos[9 * tid + 7] = p3Y / window_height;
-    pos[9 * tid + 8] = 0.0f;
+    pos[9 * tid + 8] = p3Z / window_depth;
 
 }
 
@@ -549,7 +582,7 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
     //     }
     //     exit(1);
     // }
-    kernel_prepare_move<<<grid2D, block2D>>>(d_x, d_y, d_vx, d_vy, d_future_vx, d_future_vy, d_gridFish, d_startCell, d_endCell, d_gridCell);
+    kernel_prepare_move<<<grid2D, block2D>>>(d_x, d_y, d_z, d_vx, d_vy, d_vz, d_future_vx, d_future_vy, d_future_vz, d_gridFish, d_startCell, d_endCell, d_gridCell);
     // {
     //     float* debug = new float[N];
     //     cudaMemcpy(debug, d_count, N * sizeof(float), cudaMemcpyDeviceToHost);
@@ -559,9 +592,9 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
     //     }
     //     exit(1);
     // }
-    kernel_normalize_velocity<<<grid2D, block2D>>>(d_vx, d_vy, d_future_vx, d_future_vy);
-    kernel_move<<<grid2D, block2D>>>(d_x, d_y, d_vx, d_vy);
-    kernel_display<<<grid2D, block2D>>>(dptr, d_x, d_y, d_vx, d_vy);
+    kernel_normalize_velocity<<<grid2D, block2D>>>(d_vx, d_vy, d_vz, d_future_vx, d_future_vy, d_future_vz);
+    kernel_move<<<grid2D, block2D>>>(d_x, d_y, d_z, d_vx, d_vy, d_vz);
+    kernel_display<<<grid2D, block2D>>>(dptr, d_x, d_y, d_z, d_vx, d_vy, d_vz);
 
     // unmap buffer object
     checkCudaErrors(cudaGraphicsUnmapResources(1, vbo_resource, 0));
