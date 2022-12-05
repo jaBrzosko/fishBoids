@@ -60,6 +60,8 @@ const float cell_height = window_height / GRID_SIZE;
 float *d_x, *d_y, *d_z, *d_vx, *d_vy, *d_vz, *d_future_vx, *d_future_vy, *d_future_vz;
 int *d_gridCell, *d_gridFish, *d_cellStart, *d_startCell, *d_endCell;
 
+bool doAnimate = true;
+
 // vbo variables
 GLuint vbo;
 struct cudaGraphicsResource *cuda_vbo_resource;
@@ -540,60 +542,28 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
     size_t num_bytes;
     checkCudaErrors(cudaGraphicsResourceGetMappedPointer((void **)&dptr, &num_bytes,
                                                          *vbo_resource));
-    //printf("CUDA mapped VBO: May access %ld bytes\n", num_bytes);
-
-
-    // execute the kernel
     dim3 grid2D(N/1024, 1, 1);
     dim3 block2D(1024, 1, 1);
     dim3 gridGridSize(GRID_SIZE * GRID_SIZE / 1024 + 1, 1, 1);
-    dim3 blockGridSize(1024, 1, 1);     
-    // dim3 grid3D(N / 32, N / 32, 1);
-    // dim3 block3D(32, 32, 1);
-    // dim3 gridReduce(N * N / 1024, 1, 1);
-    // dim3 blockReduce(1024, 1, 1);
+    dim3 blockGridSize(1024, 1, 1);
+    
+    if(doAnimate)
+    {
+     
 
-    // size_t shm_size = 1024 * sizeof(float);
-    // {
-    //     float* debug = new float[N];
-    //     cudaMemcpy(debug, d_x, N * sizeof(float), cudaMemcpyDeviceToHost);
-    //     for(int i = 0; i < N; i++)
-    //     {
-    //         std::cout << i << ") " << debug[i] << std::endl;
-    //     }
-    //     exit(1);
-    // }
-    // Prepare helping grid
-    setUnsortedGrid<<<grid2D, block2D>>>(d_x, d_y, d_gridCell, d_gridFish);
-    thrust::sort_by_key(thrust::device, d_gridCell, d_gridCell + N, d_gridFish);
-    cudaMemset(d_cellStart, -1, GRID_SIZE * GRID_SIZE * sizeof(int));
-    prepareCellStart<<<grid2D, block2D>>>(d_gridCell, d_cellStart);
-    prepareStartEndCell<<<gridGridSize, blockGridSize>>>(d_cellStart, d_startCell, d_endCell);
-    // {
-    //     int* debugCellStart = new int[GRID_SIZE * GRID_SIZE];
-    //     int* debugStart = new int[GRID_SIZE * GRID_SIZE];
-    //     int* debugEnd = new int[GRID_SIZE * GRID_SIZE];
-    //     cudaMemcpy(debugCellStart, d_cellStart, GRID_SIZE * GRID_SIZE * sizeof(int), cudaMemcpyDeviceToHost);
-    //     cudaMemcpy(debugStart, d_startCell, GRID_SIZE * GRID_SIZE * sizeof(int), cudaMemcpyDeviceToHost);
-    //     cudaMemcpy(debugEnd, d_endCell, GRID_SIZE * GRID_SIZE * sizeof(int), cudaMemcpyDeviceToHost);
-    //     for(int i = 0; i < GRID_SIZE * GRID_SIZE; i++)
-    //     {
-    //         std::cout << i << ") fishID: " << debugCellStart[i] << " start: " << debugStart[i] << " end: " << debugEnd[i] << std::endl;
-    //     }
-    //     exit(1);
-    // }
-    kernel_prepare_move<<<grid2D, block2D>>>(d_x, d_y, d_z, d_vx, d_vy, d_vz, d_future_vx, d_future_vy, d_future_vz, d_gridFish, d_startCell, d_endCell, d_gridCell);
-    // {
-    //     float* debug = new float[N];
-    //     cudaMemcpy(debug, d_count, N * sizeof(float), cudaMemcpyDeviceToHost);
-    //     for(int i = 0; i < N; i++)
-    //     {
-    //         std::cout << i << ") " << debug[i] << std::endl;
-    //     }
-    //     exit(1);
-    // }
-    kernel_normalize_velocity<<<grid2D, block2D>>>(d_vx, d_vy, d_vz, d_future_vx, d_future_vy, d_future_vz);
-    kernel_move<<<grid2D, block2D>>>(d_x, d_y, d_z, d_vx, d_vy, d_vz);
+        // Prepare helping grid
+        setUnsortedGrid<<<grid2D, block2D>>>(d_x, d_y, d_gridCell, d_gridFish);
+        thrust::sort_by_key(thrust::device, d_gridCell, d_gridCell + N, d_gridFish);
+        cudaMemset(d_cellStart, -1, GRID_SIZE * GRID_SIZE * sizeof(int));
+        prepareCellStart<<<grid2D, block2D>>>(d_gridCell, d_cellStart);
+        prepareStartEndCell<<<gridGridSize, blockGridSize>>>(d_cellStart, d_startCell, d_endCell);
+
+        // Start proper move/animation
+        kernel_prepare_move<<<grid2D, block2D>>>(d_x, d_y, d_z, d_vx, d_vy, d_vz, d_future_vx, d_future_vy, d_future_vz, d_gridFish, d_startCell, d_endCell, d_gridCell);
+        kernel_normalize_velocity<<<grid2D, block2D>>>(d_vx, d_vy, d_vz, d_future_vx, d_future_vy, d_future_vz);
+        kernel_move<<<grid2D, block2D>>>(d_x, d_y, d_z, d_vx, d_vy, d_vz);
+    }
+
     kernel_display<<<grid2D, block2D>>>(dptr, d_x, d_y, d_z, d_vx, d_vy, d_vz);
 
     // unmap buffer object
@@ -607,13 +577,17 @@ void keyboard(unsigned char key, int /*x*/, int /*y*/)
 {
     switch (key)
     {
-        case (27) :
+        case (27) : // escape - exit
             #if defined(__APPLE__) || defined(MACOSX)
                 exit(EXIT_SUCCESS);
             #else
                 glutDestroyWindow(glutGetWindow());
                 return;
             #endif
+            break;
+        case (' '): //space - pause
+            doAnimate = !doAnimate;
+            break;
     }
 }
 
