@@ -201,15 +201,18 @@ __global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, fl
             for(int i = startPos; i < endPos; i++)
             {
                 int another = gridFish[i];
-                float dx = tx - x[another];
-                float dy = ty - y[another];
+                float ax = x[another];
+                float ay = y[another];
+
+                float dx = tx - ax;
+                float dy = ty - ay;
 
                 float d = dx * dx + dy * dy;
                 
                 if(d < SIGHT_RANGE && d > 0 && acos((-dx * tvx + -dy * tvy) / sqrt(d * (tvx * tvx + tvy * tvy)) ) < SIGHT_ANGLE)
                 {
-                    l_cohesionX += x[another];
-                    l_cohesionY += y[another];
+                    l_cohesionX += ax;
+                    l_cohesionY += ay;
                     l_alignementX += vx[another];
                     l_alignementY += vy[another];
 
