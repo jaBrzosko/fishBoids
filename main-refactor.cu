@@ -207,7 +207,14 @@ __global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, fl
     float l_alignemntX = 0, l_alignemntY = 0;
     float l_separationX = 0, l_separationY = 0;
     float l_count = 0;
-    
+
+    // prepare variables
+    float tvx = vx[tid];
+    float tvy = vy[tid];
+
+    float tx = x[tid];
+    float ty = y[tid];
+
     for(int i = -GRID_RANGE; i <= GRID_RANGE; i++)
     {
         int newCell = cell + i * GRID_SIZE;
@@ -219,13 +226,10 @@ __global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, fl
             for(int i = startPos; i < endPos; i++)
             {
                 int another = gridFish[i];
-                float dx = x[tid] - x[another];
-                float dy = y[tid] - y[another];
+                float dx = tx - x[another];
+                float dy = ty - y[another];
 
                 float d = dx * dx + dy * dy;
-
-                float tvx = vx[tid];
-                float tvy = vy[tid];
                 
                 if(d < SIGHT_RANGE && acos((-dx * tvx + -dy * tvy) / sqrt(d * (tvx * tvx + tvy * tvy)) ) < SIGHT_ANGLE && d > 0)
                 {
