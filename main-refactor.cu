@@ -49,14 +49,16 @@
 // constants
 const int window_width  = 1000;
 const int window_height = 1000;
+const int window_depth = 1000;
 
 const int sea_width    = window_width / 2;
 const int sea_height   = window_height / 2;
+const int sea_depth   = window_depth / 2;
 
 const float cell_width = window_width / GRID_SIZE;
 const float cell_height = window_height / GRID_SIZE;
 
-float *d_x, *d_y, *d_vx, *d_vy, *d_future_vx, *d_future_vy;
+float *d_x, *d_y, *d_z, *d_vx, *d_vy, *d_vz, *d_future_vx, *d_future_vy, *d_future_vz;
 int *d_gridCell, *d_gridFish, *d_cellStart, *d_startCell, *d_endCell;
 
 // vbo variables
@@ -318,8 +320,10 @@ void initCUDA()
 {
     float* h_x = new float[N];
     float* h_y = new float[N];
+    float* h_z = new float[N];
     float* h_vx = new float[N];
     float* h_vy = new float[N];
+    float* h_vz = new float[N];
 
     // srand(time(NULL));
     srand(0);
@@ -328,19 +332,24 @@ void initCUDA()
     {
         h_x[i] = mapRange(0, 100, -sea_width, sea_width, rand() % 100);
         h_y[i] = mapRange(0, 100, -sea_height, sea_height, rand() % 100);
+        h_z[i] = mapRange(0, 100, -sea_depth, sea_depth, rand() % 100);
 
         // std::cout << h_x[i] << " " << h_y[i] << std::endl;
 
         h_vx[i] = mapRange(0, 100, -MAX_VELOCITY, MAX_VELOCITY, rand() % 100);
         h_vy[i] = mapRange(0, 100, -MAX_VELOCITY, MAX_VELOCITY, rand() % 100);
+        h_vz[i] = mapRange(0, 100, -MAX_VELOCITY, MAX_VELOCITY, rand() % 100);
         // printf("Line %d has x: %f y: %f vx: %f vy: %f\n", i, h_x[i], h_y[i], h_vx[i], h_vy[i]);
     }
     cudaMalloc(&d_x, N * sizeof(float));
     cudaMalloc(&d_y, N * sizeof(float));
+    cudaMalloc(&d_z, N * sizeof(float));
     cudaMalloc(&d_vx, N * sizeof(float));
     cudaMalloc(&d_vy, N * sizeof(float));
+    cudaMalloc(&d_vz, N * sizeof(float));
     cudaMalloc(&d_future_vx, N * sizeof(float));
     cudaMalloc(&d_future_vy, N * sizeof(float));
+    cudaMalloc(&d_future_vz, N * sizeof(float));
     cudaMalloc(&d_gridCell, N * sizeof(int));
     cudaMalloc(&d_gridFish, N * sizeof(int));
     cudaMalloc(&d_cellStart, GRID_SIZE * GRID_SIZE * sizeof(int));
@@ -349,8 +358,10 @@ void initCUDA()
 
     cudaMemcpy(d_x, h_x, N * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_y, h_y, N * sizeof(float), cudaMemcpyHostToDevice);    
+    cudaMemcpy(d_z, h_z, N * sizeof(float), cudaMemcpyHostToDevice);    
     cudaMemcpy(d_vx, h_vx, N * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_vy, h_vy, N * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_vz, h_vz, N * sizeof(float), cudaMemcpyHostToDevice);
 
     free(h_x);
     free(h_y);
@@ -416,10 +427,13 @@ void cleanup()
     }
     cudaFree(d_x);
     cudaFree(d_y);
+    cudaFree(d_z);
     cudaFree(d_vx);
     cudaFree(d_vy);
+    cudaFree(d_vz);
     cudaFree(d_future_vx);
     cudaFree(d_future_vy);
+    cudaFree(d_future_vz);
 }
 
 void createVBO(GLuint *vbo, struct cudaGraphicsResource **vbo_res,
