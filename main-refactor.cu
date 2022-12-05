@@ -22,9 +22,9 @@
 ////////////////////////////////////////////////////////////////////////////////
 //! Parameters
 ////////////////////////////////////////////////////////////////////////////////
-#define N 1024 * 20
+unsigned int N = 1024 * 20;
 #define GRID_SIZE 20
-#define GRID_RANGE 1    
+#define GRID_RANGE 1
 #define FISH_LENGTH 8.0f
 #define FISH_WIDTH 4.0f
 
@@ -36,14 +36,25 @@
 #define SIGHT_RANGE 900.0f //squared
 
 #define TURN_FACTOR 10.5f
-#define COHESION_FACTOR 4.0f
-#define ALIGNMENT_FACTOR 4.0f
-#define SEPARATION_FACTOR 4.0f
 ////////////////////////////////////////////////////////////////////////////////
 //! Parameters
 ////////////////////////////////////////////////////////////////////////////////
 
 #define mapRange(a1,a2,b1,b2,s) (b1 + (s-a1)*(b2-b1)/(a2-a1))
+
+struct Constants
+{
+    float cohesion_factor;
+    float alignment_factor;
+    float separation_factor;
+    Constants(float coh, float align, float sep)
+    {
+        cohesion_factor = coh;
+        alignment_factor = align;
+        separation_factor = sep;
+    }
+};
+Constants *d_constants, *h_constants;
 
 // constants
 const int window_width  = 1000;
@@ -144,7 +155,7 @@ __global__ void kernel_normalize_velocity(float *vx, float *vy, float *vz, float
     vz[tid] = tvz;
 }
 
-__global__ void prepareStartEndCell(int* cellStart, int* startCell, int* endCell)
+__global__ void prepareStartEndCell(int* cellStart, int* startCell, int* endCell, unsigned int N)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -180,7 +191,8 @@ __global__ void prepareStartEndCell(int* cellStart, int* startCell, int* endCell
 __global__ void kernel_prepare_move(float *x, float *y, float *z, 
         float *vx, float *vy, float *vz,
         float *fvx, float *fvy, float * fvz,
-        int* gridFish, int* startCell, int* endCell, int* gridCell)
+        int* gridFish, int* startCell, int* endCell, int* gridCell,
+        struct Constants *consts)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
     int cell = gridCell[tid];
@@ -247,15 +259,15 @@ __global__ void kernel_prepare_move(float *x, float *y, float *z,
     if(l_count > 0)
     {
 
-        float nvx = l_separationX * SEPARATION_FACTOR +
-         (l_alignementX / l_count - tvx) * ALIGNMENT_FACTOR + 
-         (l_cohesionX / l_count - tx) * COHESION_FACTOR;
-        float nvy = l_separationY * SEPARATION_FACTOR + 
-         (l_alignementY / l_count - tvy) * ALIGNMENT_FACTOR + 
-         (l_cohesionY / l_count - ty) * COHESION_FACTOR;
-        float nvz = l_separationZ * SEPARATION_FACTOR + 
-         (l_alignementZ / l_count - tvz) * ALIGNMENT_FACTOR + 
-         (l_cohesionZ / l_count - tz) * COHESION_FACTOR;
+        float nvx = l_separationX * consts->separation_factor +
+         (l_alignementX / l_count - tvx) * consts->alignment_factor + 
+         (l_cohesionX / l_count - tx) * consts->separation_factor;
+        float nvy = l_separationY * consts->separation_factor + 
+         (l_alignementY / l_count - tvy) * consts->alignment_factor + 
+         (l_cohesionY / l_count - ty) * consts->separation_factor;
+        float nvz = l_separationZ * consts->separation_factor + 
+         (l_alignementZ / l_count - tvz) * consts->alignment_factor + 
+         (l_cohesionZ / l_count - tz) * consts->separation_factor;
 
         float d = sqrt(nvx * nvx + nvy * nvy + nvz * nvz);
 
@@ -339,11 +351,36 @@ __global__ void kernel_display(float *pos, float *x, float *y, float *z, float *
 
 int main(int argc, char **argv)
 {
+    h_constants = new Constants(4.0f, 4.0f, 4.0f);
+    if(argc > 1)
+    {
+        N = 1024 * atoi(argv[1]);
+        if(!N)
+        {
+            std::cerr << "Parameter for N is not valid!" << std::endl;
+            exit(1);
+        }
+    }
+    if(argc == 5)
+    {
+        float coh = atof(argv[2]);
+        float ali = atof(argv[3]);
+        float sep = atof(argv[4]);
+        if(coh <= 0 || ali <= 0 || sep <= 0)
+        {
+            std::cerr << "One of the parameters is not valid! They have to be floats and be positive" << std::endl;
+            exit(1);
+        }
+        std::cout << "Coh: " << coh << " Ali: " << ali << " Sep: " << sep << std::endl;
+    }
     // Create the CUTIL timer
     sdkCreateTimer(&timer);
 
     initCUDA();
-    initGL(&argc, argv);
+    int targc = 1;
+    char** targv = new char*[1];
+    targv[0] = argv[0];
+    initGL(&targc, targv);
 
     createVBO(&vbo, &cuda_vbo_resource, cudaGraphicsMapFlagsWriteDiscard);
     glutMainLoop();
@@ -360,6 +397,8 @@ void initCUDA()
     float* h_vy = new float[N];
     float* h_vz = new float[N];
 
+    cudaMalloc(&d_constants, sizeof(Constants));
+    cudaMemcpy(d_constants, h_constants, sizeof(Constants), cudaMemcpyHostToDevice);
     // srand(time(NULL));
     srand(0);
 
@@ -546,7 +585,7 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
     dim3 block2D(1024, 1, 1);
     dim3 gridGridSize(GRID_SIZE * GRID_SIZE / 1024 + 1, 1, 1);
     dim3 blockGridSize(1024, 1, 1);
-    
+
     if(doAnimate)
     {
      
@@ -556,10 +595,10 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
         thrust::sort_by_key(thrust::device, d_gridCell, d_gridCell + N, d_gridFish);
         cudaMemset(d_cellStart, -1, GRID_SIZE * GRID_SIZE * sizeof(int));
         prepareCellStart<<<grid2D, block2D>>>(d_gridCell, d_cellStart);
-        prepareStartEndCell<<<gridGridSize, blockGridSize>>>(d_cellStart, d_startCell, d_endCell);
+        prepareStartEndCell<<<gridGridSize, blockGridSize>>>(d_cellStart, d_startCell, d_endCell, N);
 
         // Start proper move/animation
-        kernel_prepare_move<<<grid2D, block2D>>>(d_x, d_y, d_z, d_vx, d_vy, d_vz, d_future_vx, d_future_vy, d_future_vz, d_gridFish, d_startCell, d_endCell, d_gridCell);
+        kernel_prepare_move<<<grid2D, block2D>>>(d_x, d_y, d_z, d_vx, d_vy, d_vz, d_future_vx, d_future_vy, d_future_vz, d_gridFish, d_startCell, d_endCell, d_gridCell, d_constants);
         kernel_normalize_velocity<<<grid2D, block2D>>>(d_vx, d_vy, d_vz, d_future_vx, d_future_vy, d_future_vz);
         kernel_move<<<grid2D, block2D>>>(d_x, d_y, d_z, d_vx, d_vy, d_vz);
     }
