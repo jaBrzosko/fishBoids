@@ -206,7 +206,7 @@ __global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, fl
 
                 float d = dx * dx + dy * dy;
                 
-                if(d < SIGHT_RANGE && acos((-dx * tvx + -dy * tvy) / sqrt(d * (tvx * tvx + tvy * tvy)) ) < SIGHT_ANGLE && d > 0)
+                if(d < SIGHT_RANGE && d > 0 && acos((-dx * tvx + -dy * tvy) / sqrt(d * (tvx * tvx + tvy * tvy)) ) < SIGHT_ANGLE)
                 {
                     l_cohesionX += x[another];
                     l_cohesionY += y[another];
