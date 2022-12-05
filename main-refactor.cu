@@ -35,12 +35,28 @@ unsigned int N = 1024 * 20;
 #define SIGHT_ANGLE 3.1415f * 0.55f
 #define SIGHT_RANGE 900.0f //squared
 
-#define TURN_FACTOR 10.5f
+#define TURN_FACTOR 20.5f
 ////////////////////////////////////////////////////////////////////////////////
 //! Parameters
 ////////////////////////////////////////////////////////////////////////////////
 
 #define mapRange(a1,a2,b1,b2,s) (b1 + (s-a1)*(b2-b1)/(a2-a1))
+
+// constants
+const int window_width  = 1000;
+const int window_height = 1000;
+const int window_depth = 1000;
+
+const int sea_width    = window_width / 2;
+const int sea_height   = window_height / 2;
+const int sea_depth   = window_depth / 2;
+
+const float cell_width = window_width / GRID_SIZE;
+const float cell_height = window_height / GRID_SIZE;
+
+int *d_gridCell, *d_gridFish, *d_cellStart, *d_startCell, *d_endCell;
+
+bool doAnimate = true; // operates pause button
 
 struct Constants
 {
@@ -56,22 +72,26 @@ struct Constants
 };
 Constants *d_constants, *h_constants;
 
-// constants
-const int window_width  = 1000;
-const int window_height = 1000;
-const int window_depth = 1000;
+struct FishData
+{
+    // position
+    float *x;
+    float *y;
+    float *z;
 
-const int sea_width    = window_width / 2;
-const int sea_height   = window_height / 2;
-const int sea_depth   = window_depth / 2;
+    // velocity
+    float *vx;
+    float *vy;
+    float *vz;
 
-const float cell_width = window_width / GRID_SIZE;
-const float cell_height = window_height / GRID_SIZE;
+    // future velocity - used to update model synchronously
+    float *fvx;
+    float *fvy;
+    float *fvz;
+};
 
-float *d_x, *d_y, *d_z, *d_vx, *d_vy, *d_vz, *d_future_vx, *d_future_vy, *d_future_vz;
-int *d_gridCell, *d_gridFish, *d_cellStart, *d_startCell, *d_endCell;
+FishData *d_fishData;
 
-bool doAnimate = true;
 
 // vbo variables
 GLuint vbo;
@@ -109,11 +129,11 @@ void display();
 void runCuda(struct cudaGraphicsResource **vbo_resource);
 
 
-__global__ void setUnsortedGrid(float* x, float* y, int* gridCell, int* gridFish)
+__global__ void setUnsortedGrid(FishData *data, int* gridCell, int* gridFish)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
-    int column = (x[tid] + sea_width) / cell_width;
-    int row = (y[tid] + sea_height) / cell_height;
+    int column = (data->x[tid] + sea_width) / cell_width;
+    int row = (data->y[tid] + sea_height) / cell_height;
     gridCell[tid] = max(min(row * GRID_SIZE + column, GRID_SIZE * GRID_SIZE - 1), 0);
     gridFish[tid] = tid;
 
@@ -129,13 +149,13 @@ __global__ void prepareCellStart(int* gridCell, int* cellStart)
 }
 
 
-__global__ void kernel_normalize_velocity(float *vx, float *vy, float *vz, float *fvx, float *fvy, float *fvz)
+__global__ void kernel_normalize_velocity(FishData *data)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
     
-    float tvx = fvx[tid];
-    float tvy = fvy[tid];
-    float tvz = fvz[tid];
+    float tvx = data->fvx[tid];
+    float tvy = data->fvy[tid];
+    float tvz = data->fvz[tid];
     
     float speed = sqrt(tvx * tvx + tvy * tvy + tvz * tvz);
     if(speed > MAX_VELOCITY)
@@ -150,9 +170,9 @@ __global__ void kernel_normalize_velocity(float *vx, float *vy, float *vz, float
         tvy = MIN_VELOCITY * tvy / speed;
         tvz = MIN_VELOCITY * tvz / speed;
     }
-    vx[tid] = tvx;
-    vy[tid] = tvy;
-    vz[tid] = tvz;
+    data->vx[tid] = tvx;
+    data->vy[tid] = tvy;
+    data->vz[tid] = tvz;
 }
 
 __global__ void prepareStartEndCell(int* cellStart, int* startCell, int* endCell, unsigned int N)
@@ -188,9 +208,7 @@ __global__ void prepareStartEndCell(int* cellStart, int* startCell, int* endCell
     endCell[tid] = endPos == GRID_SIZE * GRID_SIZE ? N : cellStart[endPos];
 }
 
-__global__ void kernel_prepare_move(float *x, float *y, float *z, 
-        float *vx, float *vy, float *vz,
-        float *fvx, float *fvy, float * fvz,
+__global__ void kernel_prepare_move(FishData *data,
         int* gridFish, int* startCell, int* endCell, int* gridCell,
         struct Constants *consts)
 {
@@ -205,13 +223,13 @@ __global__ void kernel_prepare_move(float *x, float *y, float *z,
     float l_count = 0;
 
     // prepare variables
-    float tvx = vx[tid];
-    float tvy = vy[tid];
-    float tvz = vz[tid];
+    float tvx = data->vx[tid];
+    float tvy = data->vy[tid];
+    float tvz = data->vz[tid];
 
-    float tx = x[tid];
-    float ty = y[tid];
-    float tz = z[tid];
+    float tx = data->x[tid];
+    float ty = data->y[tid];
+    float tz = data->z[tid];
 
     for(int i = -GRID_RANGE; i <= GRID_RANGE; i++)
     {
@@ -224,9 +242,9 @@ __global__ void kernel_prepare_move(float *x, float *y, float *z,
             for(int i = startPos; i < endPos; i++)
             {
                 int another = gridFish[i];
-                float ax = x[another];
-                float ay = y[another];
-                float az = z[another];
+                float ax = data->x[another];
+                float ay = data->y[another];
+                float az = data->z[another];
 
                 float dx = tx - ax;
                 float dy = ty - ay;
@@ -240,9 +258,9 @@ __global__ void kernel_prepare_move(float *x, float *y, float *z,
                     l_cohesionY += ay;
                     l_cohesionZ += az;
 
-                    l_alignementX += vx[another];
-                    l_alignementY += vy[another];
-                    l_alignementZ += vz[another];
+                    l_alignementX += data->vx[another];
+                    l_alignementY += data->vy[another];
+                    l_alignementZ += data->vz[another];
 
                     float dsqrt = sqrt(d);
 
@@ -273,56 +291,56 @@ __global__ void kernel_prepare_move(float *x, float *y, float *z,
 
         if(d > 0.001f)
         {
-            fvx[tid] = tvx + MAX_ACCELERATION / d * nvx;
-            fvy[tid] = tvy + MAX_ACCELERATION / d * nvy;
-            fvz[tid] = tvz + MAX_ACCELERATION / d * nvz;
+            data->fvx[tid] = tvx + MAX_ACCELERATION / d * nvx;
+            data->fvy[tid] = tvy + MAX_ACCELERATION / d * nvy;
+            data->fvz[tid] = tvz + MAX_ACCELERATION / d * nvz;
         }
     }
 }
 
-__global__ void kernel_move(float *x, float *y, float *z, float *vx, float *vy, float *vz)
+__global__ void kernel_move(FishData *data)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
-    float nx = x[tid] + vx[tid];
-    float ny = y[tid] + vy[tid];
-    float nz = z[tid] + vz[tid];
+    float nx = data->x[tid] + data->vx[tid];
+    float ny = data->y[tid] + data->vy[tid];
+    float nz = data->z[tid] + data->vz[tid];
 
     // repair X velocity
     if(nx < -sea_width)
-        vx[tid] = vx[tid] + TURN_FACTOR;
+        data->vx[tid] = data->vx[tid] + TURN_FACTOR;
     else if(nx > sea_width)
-        vx[tid] = vx[tid] - TURN_FACTOR;
+        data->vx[tid] = data->vx[tid] - TURN_FACTOR;
     // repair Y velocity
     if(ny < -sea_height)
-        vy[tid] = vy[tid] + TURN_FACTOR;
+        data->vy[tid] = data->vy[tid] + TURN_FACTOR;
     else if(ny > sea_height)
-        vy[tid] = vy[tid] - TURN_FACTOR;
+        data->vy[tid] = data->vy[tid] - TURN_FACTOR;
     if(nz < -sea_depth)
-        vz[tid] = vz[tid] + TURN_FACTOR;
+        data->vz[tid] = data->vz[tid] + TURN_FACTOR;
     else if(nz > sea_depth)
-        vz[tid] = vz[tid] - TURN_FACTOR;
-    x[tid] = x[tid] + vx[tid];
-    y[tid] = y[tid] + vy[tid];
-    z[tid] = z[tid] + vz[tid];
+        data->vz[tid] = data->vz[tid] - TURN_FACTOR;
+    data->x[tid] = data->x[tid] + data->vx[tid];
+    data->y[tid] = data->y[tid] + data->vy[tid];
+    data->z[tid] = data->z[tid] + data->vz[tid];
 }
 
 
-__global__ void kernel_display(float *pos, float *x, float *y, float *z, float *vx, float *vy, float *vz)
+__global__ void kernel_display(float *pos, FishData *data)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
 
-    float tvx = vx[tid];
-    float tvy = vy[tid];
-    float tvz = vz[tid];
+    float tvx = data->vx[tid];
+    float tvy = data->vy[tid];
+    float tvz = data->vz[tid];
 
     float coef = FISH_LENGTH / sqrt(tvx * tvx + tvy * tvy + tvz * tvz);
     float tempX = coef * tvx;
     float tempY = coef * tvy;
     float tempZ = coef * tvz;
 
-    float p1X = x[tid];
-    float p1Y = y[tid];
-    float p1Z = z[tid];
+    float p1X = data->x[tid];
+    float p1Y = data->y[tid];
+    float p1Z = data->z[tid];
 
     float p2X = p1X;
     float p2Y = p1Y + tempZ * FISH_WIDTH / FISH_LENGTH;
@@ -390,6 +408,7 @@ int main(int argc, char **argv)
 
 void initCUDA()
 {
+
     float* h_x = new float[N];
     float* h_y = new float[N];
     float* h_z = new float[N];
@@ -399,7 +418,6 @@ void initCUDA()
 
     cudaMalloc(&d_constants, sizeof(Constants));
     cudaMemcpy(d_constants, h_constants, sizeof(Constants), cudaMemcpyHostToDevice);
-    // srand(time(NULL));
     srand(0);
 
     for(int i = 0; i < N; ++i)
@@ -415,27 +433,47 @@ void initCUDA()
         h_vz[i] = mapRange(0, 100, -MAX_VELOCITY, MAX_VELOCITY, rand() % 100);
         // printf("Line %d has x: %f y: %f vx: %f vy: %f\n", i, h_x[i], h_y[i], h_vx[i], h_vy[i]);
     }
-    cudaMalloc(&d_x, N * sizeof(float));
-    cudaMalloc(&d_y, N * sizeof(float));
-    cudaMalloc(&d_z, N * sizeof(float));
-    cudaMalloc(&d_vx, N * sizeof(float));
-    cudaMalloc(&d_vy, N * sizeof(float));
-    cudaMalloc(&d_vz, N * sizeof(float));
-    cudaMalloc(&d_future_vx, N * sizeof(float));
-    cudaMalloc(&d_future_vy, N * sizeof(float));
-    cudaMalloc(&d_future_vz, N * sizeof(float));
+
+    float *t_x, *t_y, *t_z;
+    float *t_vx, *t_vy, *t_vz;
+    float *t_fvx, *t_fvy, *t_fvz;
+    cudaMalloc(&t_x, N * sizeof(float));
+    cudaMalloc(&t_y, N * sizeof(float));
+    cudaMalloc(&t_z, N * sizeof(float));
+    cudaMalloc(&t_vx, N * sizeof(float));
+    cudaMalloc(&t_vy, N * sizeof(float));
+    cudaMalloc(&t_vz, N * sizeof(float));
+    cudaMalloc(&t_fvx, N * sizeof(float));
+    cudaMalloc(&t_fvy, N * sizeof(float));
+    cudaMalloc(&t_fvz, N * sizeof(float));
+
+    cudaMemcpy(t_x, h_x, N * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(t_y, h_y, N * sizeof(float), cudaMemcpyHostToDevice);    
+    cudaMemcpy(t_z, h_z, N * sizeof(float), cudaMemcpyHostToDevice);    
+    cudaMemcpy(t_vx, h_vx, N * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(t_vy, h_vy, N * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(t_vz, h_vz, N * sizeof(float), cudaMemcpyHostToDevice);
+
+    FishData *temp_data = new FishData();
+    temp_data->x = t_x;
+    temp_data->y = t_y;
+    temp_data->z = t_z;
+
+    temp_data->vx = t_vx;
+    temp_data->vy = t_vy;
+    temp_data->vz = t_vz;
+
+    temp_data->fvx = t_fvx;
+    temp_data->fvy = t_fvy;
+    temp_data->fvz = t_fvz;
+
+    cudaMalloc(&d_fishData, sizeof(FishData));
+    cudaMemcpy(d_fishData, temp_data, sizeof(FishData), cudaMemcpyHostToDevice);
     cudaMalloc(&d_gridCell, N * sizeof(int));
     cudaMalloc(&d_gridFish, N * sizeof(int));
     cudaMalloc(&d_cellStart, GRID_SIZE * GRID_SIZE * sizeof(int));
     cudaMalloc(&d_startCell, GRID_SIZE * GRID_SIZE * sizeof(int));
     cudaMalloc(&d_endCell, GRID_SIZE * GRID_SIZE * sizeof(int));
-
-    cudaMemcpy(d_x, h_x, N * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_y, h_y, N * sizeof(float), cudaMemcpyHostToDevice);    
-    cudaMemcpy(d_z, h_z, N * sizeof(float), cudaMemcpyHostToDevice);    
-    cudaMemcpy(d_vx, h_vx, N * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_vy, h_vy, N * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_vz, h_vz, N * sizeof(float), cudaMemcpyHostToDevice);
 
     free(h_x);
     free(h_y);
@@ -499,15 +537,17 @@ void cleanup()
     {
         deleteVBO(&vbo, cuda_vbo_resource);
     }
-    cudaFree(d_x);
-    cudaFree(d_y);
-    cudaFree(d_z);
-    cudaFree(d_vx);
-    cudaFree(d_vy);
-    cudaFree(d_vz);
-    cudaFree(d_future_vx);
-    cudaFree(d_future_vy);
-    cudaFree(d_future_vz);
+    cudaFree(d_fishData->x);
+    cudaFree(d_fishData->y);
+    cudaFree(d_fishData->z);
+    cudaFree(d_fishData->vx);
+    cudaFree(d_fishData->vy);
+    cudaFree(d_fishData->vz);
+    cudaFree(d_fishData->vx);
+    cudaFree(d_fishData->vy);
+    cudaFree(d_fishData->vz);
+    cudaFree(d_fishData);
+    cudaFree(d_constants);
 }
 
 void createVBO(GLuint *vbo, struct cudaGraphicsResource **vbo_res,
@@ -585,25 +625,24 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
     dim3 block2D(1024, 1, 1);
     dim3 gridGridSize(GRID_SIZE * GRID_SIZE / 1024 + 1, 1, 1);
     dim3 blockGridSize(1024, 1, 1);
-
     if(doAnimate)
     {
      
 
         // Prepare helping grid
-        setUnsortedGrid<<<grid2D, block2D>>>(d_x, d_y, d_gridCell, d_gridFish);
+        setUnsortedGrid<<<grid2D, block2D>>>(d_fishData, d_gridCell, d_gridFish);
         thrust::sort_by_key(thrust::device, d_gridCell, d_gridCell + N, d_gridFish);
         cudaMemset(d_cellStart, -1, GRID_SIZE * GRID_SIZE * sizeof(int));
         prepareCellStart<<<grid2D, block2D>>>(d_gridCell, d_cellStart);
         prepareStartEndCell<<<gridGridSize, blockGridSize>>>(d_cellStart, d_startCell, d_endCell, N);
 
         // Start proper move/animation
-        kernel_prepare_move<<<grid2D, block2D>>>(d_x, d_y, d_z, d_vx, d_vy, d_vz, d_future_vx, d_future_vy, d_future_vz, d_gridFish, d_startCell, d_endCell, d_gridCell, d_constants);
-        kernel_normalize_velocity<<<grid2D, block2D>>>(d_vx, d_vy, d_vz, d_future_vx, d_future_vy, d_future_vz);
-        kernel_move<<<grid2D, block2D>>>(d_x, d_y, d_z, d_vx, d_vy, d_vz);
+        kernel_prepare_move<<<grid2D, block2D>>>(d_fishData, d_gridFish, d_startCell, d_endCell, d_gridCell, d_constants);
+        kernel_normalize_velocity<<<grid2D, block2D>>>(d_fishData);
+        kernel_move<<<grid2D, block2D>>>(d_fishData);
     }
 
-    kernel_display<<<grid2D, block2D>>>(dptr, d_x, d_y, d_z, d_vx, d_vy, d_vz);
+    kernel_display<<<grid2D, block2D>>>(dptr, d_fishData);
 
     // unmap buffer object
     checkCudaErrors(cudaGraphicsUnmapResources(1, vbo_resource, 0));
