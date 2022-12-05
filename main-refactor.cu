@@ -196,78 +196,65 @@ __global__ void prepareStartEndCell(int* cellStart, int* startCell, int* endCell
     endCell[tid] = endPos == GRID_SIZE * GRID_SIZE ? N : cellStart[endPos];
 }
 
-__device__ void make_move_for_row(float *x, float *y, float *vx, float *vy, float *cohX, float *cohY, float *sepX, float *sepY, float *alignX, float *alignY, float *count, int* gridFish, int* cellStart, int tid, int cell, int* startCell, int* endCell)
-{
-    int startPos = startCell[cell];
-    int endPos = endCell[cell];
-
-
-    float l_cohesionX = 0, l_cohesionY = 0;
-    float l_alignemntX = 0, l_alignemntY = 0;
-    float l_separationX = 0, l_separationY = 0;
-    float l_count = 0;
-    for(int i = startPos; i < endPos; i++)
-    {
-        int another = gridFish[i];
-        float dx = x[tid] - x[another];
-        float dy = y[tid] - y[another];
-
-        float d = dx * dx + dy * dy;
-
-        float tvx = vx[tid];
-        float tvy = vy[tid];
-        
-        if(d < SIGHT_RANGE && acos((-dx * tvx + -dy * tvy) / sqrt(d * (tvx * tvx + tvy * tvy)) ) < SIGHT_ANGLE && d > 0)
-        {
-            l_cohesionX += x[another];
-            l_cohesionY += y[another];
-            l_alignemntX += vx[another];
-            l_alignemntY += vy[another];
-
-            float dsqrt = sqrt(d);
-
-            l_separationX += dx / dsqrt;
-            l_separationY += dy / dsqrt;
-
-            l_count += 1;
-
-        }
-    }
-
-    if(l_count > 0)
-    {
-        cohX[tid] = cohX[tid] + l_cohesionX;
-        cohY[tid] = cohY[tid] + l_cohesionY;
-        alignX[tid] = alignX[tid] + l_alignemntX;
-        alignY[tid] = alignY[tid] + l_alignemntY;
-        sepX[tid] = sepX[tid] + l_separationX;
-        sepY[tid] = sepY[tid] + l_separationY;
-        count[tid] = count[tid] + l_count;
-    }
-}
-
 __global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, float *cohX, float *cohY, float *sepX, float *sepY, float *alignX, float *alignY, float *count, int* gridFish, int* cellStart, int* startCell, int* endCell, int* gridCell)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
     int cell = gridCell[tid];
     tid = gridFish[tid];
-    // reset accumulators
-    cohX[tid] = 0;
-    cohY[tid] = 0;
-    alignX[tid] = 0;
-    alignY[tid] = 0;
-    sepX[tid] = 0;
-    sepY[tid] = 0;
-    count[tid] = 0;
-    //int cell = max(min((int)((x[tid] + sea_width) / cell_width + (y[tid] + sea_height) / cell_height * GRID_SIZE), GRID_SIZE * GRID_SIZE - 1), 0);
+
+    // prepare accumulators
+    float l_cohesionX = 0, l_cohesionY = 0;
+    float l_alignemntX = 0, l_alignemntY = 0;
+    float l_separationX = 0, l_separationY = 0;
+    float l_count = 0;
     
     for(int i = -GRID_RANGE; i <= GRID_RANGE; i++)
     {
         int newCell = cell + i * GRID_SIZE;
         if(newCell >= 0 && newCell < GRID_SIZE * GRID_SIZE)
-            make_move_for_row(x, y, vx, vy, cohX, cohY, sepX, sepY, alignX, 
-            alignY, count, gridFish, cellStart, tid, newCell, startCell, endCell);
-    } 
+        {
+            int startPos = startCell[newCell];
+            int endPos = endCell[newCell];
+
+            for(int i = startPos; i < endPos; i++)
+            {
+                int another = gridFish[i];
+                float dx = x[tid] - x[another];
+                float dy = y[tid] - y[another];
+
+                float d = dx * dx + dy * dy;
+
+                float tvx = vx[tid];
+                float tvy = vy[tid];
+                
+                if(d < SIGHT_RANGE && acos((-dx * tvx + -dy * tvy) / sqrt(d * (tvx * tvx + tvy * tvy)) ) < SIGHT_ANGLE && d > 0)
+                {
+                    l_cohesionX += x[another];
+                    l_cohesionY += y[another];
+                    l_alignemntX += vx[another];
+                    l_alignemntY += vy[another];
+
+                    float dsqrt = sqrt(d);
+
+                    l_separationX += dx / dsqrt;
+                    l_separationY += dy / dsqrt;
+
+                    l_count += 1;
+
+                }
+            }
+        }
+    }
+    if(l_count > 0)
+    {
+        cohX[tid] = l_cohesionX;
+        cohY[tid] = l_cohesionY;
+        alignX[tid] = l_alignemntX;
+        alignY[tid] = l_alignemntY;
+        sepX[tid] = l_separationX;
+        sepY[tid] = l_separationY;
+        count[tid] = l_count;
+    }
 }
 
 __global__ void kernel_move(float *x, float *y, float *vx, float *vy)
