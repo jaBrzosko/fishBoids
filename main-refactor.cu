@@ -56,7 +56,7 @@ const int sea_height   = window_height / 2;
 const float cell_width = window_width / GRID_SIZE;
 const float cell_height = window_height / GRID_SIZE;
 
-float *d_x, *d_y, *d_vx, *d_vy, *d_cohesionx, *d_cohesiony, *d_alignmentx, *d_alignmenty, *d_separationx, *d_separationy, *d_count;
+float *d_x, *d_y, *d_vx, *d_vy, *d_future_vx, *d_future_vy;
 int *d_gridCell, *d_gridFish, *d_cellStart, *d_startCell, *d_endCell;
 
 // vbo variables
@@ -115,52 +115,26 @@ __global__ void prepareCellStart(int* gridCell, int* cellStart)
 }
 
 
-__global__ void kernel_normalize_velocity(float *vx, float *vy)
+__global__ void kernel_normalize_velocity(float *vx, float *vy, float *fvx, float *fvy)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
     
-    float tvx = vx[tid];
-    float tvy = vy[tid];
+    float tvx = fvx[tid];
+    float tvy = fvy[tid];
     
     float speed = sqrt(tvx * tvx + tvy * tvy);
     if(speed > MAX_VELOCITY)
     {
-        vx[tid] = MAX_VELOCITY * tvx / speed;
-        vy[tid] = MAX_VELOCITY * tvy / speed;
+        tvx = MAX_VELOCITY * tvx / speed;
+        tvy = MAX_VELOCITY * tvy / speed;
     }
     else if(speed < MIN_VELOCITY)
     {
-        vx[tid] = MIN_VELOCITY * tvx / speed;
-        vy[tid] = MIN_VELOCITY * tvy / speed;
+        tvx = MIN_VELOCITY * tvx / speed;
+        tvy = MIN_VELOCITY * tvy / speed;
     }
-}
-
-__global__ void kernel_update_velocity(float *x, float *y, float *vx, float *vy, float *cohX, float *cohY, float *sepX, float *sepY, float *alignX, float *alignY, float *count)
-{
-    unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
-
-    if(count[tid] != 0)
-    {
-        float tvx = vx[tid];
-        float tvy = vy[tid];
-
-        int cnt = count[tid];
-
-        float nvx = sepX[tid] * SEPARATION_FACTOR +
-         (alignX[tid] / cnt - tvx) * ALIGNMENT_FACTOR + 
-         (cohX[tid] / cnt - x[tid]) * COHESION_FACTOR;
-        float nvy = sepY[tid] * SEPARATION_FACTOR + 
-         (alignY[tid] / cnt - tvy) * ALIGNMENT_FACTOR + 
-         (cohY[tid] / cnt - y[tid]) * COHESION_FACTOR;
-
-        float d = sqrt(nvx * nvx + nvy * nvy);
-
-        if(d > 0.001f)
-        {
-            vx[tid] = tvx + MAX_ACCELERATION / d * nvx;
-            vy[tid] = tvy + MAX_ACCELERATION / d * nvy;
-        }
-    }
+    vx[tid] = tvx;
+    vy[tid] = tvy;
 }
 
 __global__ void prepareStartEndCell(int* cellStart, int* startCell, int* endCell)
@@ -196,7 +170,8 @@ __global__ void prepareStartEndCell(int* cellStart, int* startCell, int* endCell
     endCell[tid] = endPos == GRID_SIZE * GRID_SIZE ? N : cellStart[endPos];
 }
 
-__global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, float *cohX, float *cohY, float *sepX, float *sepY, float *alignX, float *alignY, float *count, int* gridFish, int* cellStart, int* startCell, int* endCell, int* gridCell)
+__global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, float *fvx, float *fvy,
+        int* gridFish, int* startCell, int* endCell, int* gridCell)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
     int cell = gridCell[tid];
@@ -204,7 +179,7 @@ __global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, fl
 
     // prepare accumulators
     float l_cohesionX = 0, l_cohesionY = 0;
-    float l_alignemntX = 0, l_alignemntY = 0;
+    float l_alignementX = 0, l_alignementY = 0;
     float l_separationX = 0, l_separationY = 0;
     float l_count = 0;
 
@@ -235,8 +210,8 @@ __global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, fl
                 {
                     l_cohesionX += x[another];
                     l_cohesionY += y[another];
-                    l_alignemntX += vx[another];
-                    l_alignemntY += vy[another];
+                    l_alignementX += vx[another];
+                    l_alignementY += vy[another];
 
                     float dsqrt = sqrt(d);
 
@@ -251,13 +226,21 @@ __global__ void kernel_prepare_move(float *x, float *y, float *vx, float *vy, fl
     }
     if(l_count > 0)
     {
-        cohX[tid] = l_cohesionX;
-        cohY[tid] = l_cohesionY;
-        alignX[tid] = l_alignemntX;
-        alignY[tid] = l_alignemntY;
-        sepX[tid] = l_separationX;
-        sepY[tid] = l_separationY;
-        count[tid] = l_count;
+
+        float nvx = l_separationX * SEPARATION_FACTOR +
+         (l_alignementX / l_count - tvx) * ALIGNMENT_FACTOR + 
+         (l_cohesionX / l_count - tx) * COHESION_FACTOR;
+        float nvy = l_separationY * SEPARATION_FACTOR + 
+         (l_alignementY / l_count - tvy) * ALIGNMENT_FACTOR + 
+         (l_cohesionY / l_count - ty) * COHESION_FACTOR;
+
+        float d = sqrt(nvx * nvx + nvy * nvy);
+
+        if(d > 0.001f)
+        {
+            fvx[tid] = tvx + MAX_ACCELERATION / d * nvx;
+            fvy[tid] = tvy + MAX_ACCELERATION / d * nvy;
+        }
     }
 }
 
@@ -353,18 +336,13 @@ void initCUDA()
     cudaMalloc(&d_y, N * sizeof(float));
     cudaMalloc(&d_vx, N * sizeof(float));
     cudaMalloc(&d_vy, N * sizeof(float));
+    cudaMalloc(&d_future_vx, N * sizeof(float));
+    cudaMalloc(&d_future_vy, N * sizeof(float));
     cudaMalloc(&d_gridCell, N * sizeof(int));
     cudaMalloc(&d_gridFish, N * sizeof(int));
     cudaMalloc(&d_cellStart, GRID_SIZE * GRID_SIZE * sizeof(int));
     cudaMalloc(&d_startCell, GRID_SIZE * GRID_SIZE * sizeof(int));
     cudaMalloc(&d_endCell, GRID_SIZE * GRID_SIZE * sizeof(int));
-    cudaMalloc(&d_cohesionx, N * sizeof(float));
-    cudaMalloc(&d_cohesiony, N * sizeof(float));    
-    cudaMalloc(&d_separationx, N * sizeof(float));
-    cudaMalloc(&d_separationy, N * sizeof(float));
-    cudaMalloc(&d_alignmentx, N * sizeof(float));
-    cudaMalloc(&d_alignmenty, N * sizeof(float));
-    cudaMalloc(&d_count, N * sizeof(float));
 
     cudaMemcpy(d_x, h_x, N * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_y, h_y, N * sizeof(float), cudaMemcpyHostToDevice);    
@@ -437,13 +415,8 @@ void cleanup()
     cudaFree(d_y);
     cudaFree(d_vx);
     cudaFree(d_vy);
-    cudaFree(d_separationx);
-    cudaFree(d_separationy);
-    cudaFree(d_cohesionx);
-    cudaFree(d_cohesiony);
-    cudaFree(d_alignmentx);
-    cudaFree(d_alignmenty);
-    cudaFree(d_count);
+    cudaFree(d_future_vx);
+    cudaFree(d_future_vy);
 }
 
 void createVBO(GLuint *vbo, struct cudaGraphicsResource **vbo_res,
@@ -559,7 +532,7 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
     //     }
     //     exit(1);
     // }
-    kernel_prepare_move<<<grid2D, block2D>>>(d_x, d_y, d_vx, d_vy, d_cohesionx, d_cohesiony, d_separationx, d_separationy, d_alignmentx, d_alignmenty, d_count, d_gridFish, d_gridCell, d_startCell, d_endCell, d_gridCell);
+    kernel_prepare_move<<<grid2D, block2D>>>(d_x, d_y, d_vx, d_vy, d_future_vx, d_future_vy, d_gridFish, d_startCell, d_endCell, d_gridCell);
     // {
     //     float* debug = new float[N];
     //     cudaMemcpy(debug, d_count, N * sizeof(float), cudaMemcpyDeviceToHost);
@@ -569,8 +542,7 @@ void runCuda(struct cudaGraphicsResource **vbo_resource)
     //     }
     //     exit(1);
     // }
-    kernel_update_velocity<<<grid2D, block2D>>>(d_x, d_y, d_vx, d_vy, d_cohesionx, d_cohesiony, d_separationx, d_separationy, d_alignmentx, d_alignmenty, d_count);
-    kernel_normalize_velocity<<<grid2D, block2D>>>(d_vx, d_vy);
+    kernel_normalize_velocity<<<grid2D, block2D>>>(d_vx, d_vy, d_future_vx, d_future_vy);
     kernel_move<<<grid2D, block2D>>>(d_x, d_y, d_vx, d_vy);
     kernel_display<<<grid2D, block2D>>>(dptr, d_x, d_y, d_vx, d_vy);
 
@@ -586,23 +558,6 @@ void keyboard(unsigned char key, int /*x*/, int /*y*/)
     switch (key)
     {
         case (27) :
-            {
-                float *debug = new float[N * N];
-                float *debugX = new float[N * N];
-                float *debugY = new float[N * N];
-                cudaMemcpy(debug, d_count, N * N * sizeof(float), cudaMemcpyDeviceToHost);
-                for(int i = 0; i < N; i++)
-                {
-                    for(int j = 0; j < N; j++)
-                    {
-                        std::cout << ":" << debug[i * N + j];
-                    }
-                    std::cout << std::endl;
-                }
-                delete[] debug;
-                delete[] debugX;
-                delete[] debugY;
-            }
             #if defined(__APPLE__) || defined(MACOSX)
                 exit(EXIT_SUCCESS);
             #else
