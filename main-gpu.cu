@@ -68,6 +68,7 @@ unsigned int N = 1024 * 20;
 #define SIGHT_RANGE 900.0f //squared
 
 #define TURN_FACTOR 20.5f
+#define INCREMENT_FACTOR 0.5f
 ////////////////////////////////////////////////////////////////////////////////
 //! Parameters
 ////////////////////////////////////////////////////////////////////////////////
@@ -349,19 +350,19 @@ __global__ void kernel_move(FishData *data)
 
     // repair X velocity
     if(nx < -sea_width)
-        data->vx[tid] = data->vx[tid] + TURN_FACTOR;
+        data->vx[tid] = -data->vx[tid];// + TURN_FACTOR;
     else if(nx > sea_width)
-        data->vx[tid] = data->vx[tid] - TURN_FACTOR;
+        data->vx[tid] = -data->vx[tid];// - TURN_FACTOR;
     // repair Y velocity
     if(ny < -sea_height)
-        data->vy[tid] = data->vy[tid] + TURN_FACTOR;
+        data->vy[tid] = -data->vy[tid];// + TURN_FACTOR;
     else if(ny > sea_height)
-        data->vy[tid] = data->vy[tid] - TURN_FACTOR;
+        data->vy[tid] = -data->vy[tid];// - TURN_FACTOR;
     // repair Z velocity
     if(nz < -sea_depth)
-        data->vz[tid] = data->vz[tid] + TURN_FACTOR;
+        data->vz[tid] = -data->vz[tid];// + TURN_FACTOR;
     else if(nz > sea_depth)
-        data->vz[tid] = data->vz[tid] - TURN_FACTOR;
+        data->vz[tid] = -data->vz[tid];// - TURN_FACTOR;
 
     // update position
     data->x[tid] = data->x[tid] + data->vx[tid];
@@ -715,6 +716,42 @@ void keyboard(unsigned char key, int /*x*/, int /*y*/)
         case (' '): //space - pause
             doAnimate = !doAnimate;
             break;
+        case ('q'):
+            // add cohesion
+            h_constants->cohesion_factor += INCREMENT_FACTOR;
+            cudaMemcpy(d_constants, h_constants, sizeof(Constants), cudaMemcpyHostToDevice);
+            std::cout << "New cohesion factor: " << h_constants->cohesion_factor << std::endl;
+            break;
+        case ('a'):
+            // sub cohesion
+            h_constants->cohesion_factor -= INCREMENT_FACTOR;
+            cudaMemcpy(d_constants, h_constants, sizeof(Constants), cudaMemcpyHostToDevice);
+            std::cout << "New cohesion factor: " << h_constants->cohesion_factor << std::endl;
+            break;
+        case ('w'):
+            // add alignment
+            h_constants->alignment_factor += INCREMENT_FACTOR;
+            cudaMemcpy(d_constants, h_constants, sizeof(Constants), cudaMemcpyHostToDevice);
+            std::cout << "New alignment factor: " << h_constants->alignment_factor << std::endl;
+            break;
+        case ('s'):
+            // sub alignment
+            h_constants->alignment_factor -= INCREMENT_FACTOR;
+            cudaMemcpy(d_constants, h_constants, sizeof(Constants), cudaMemcpyHostToDevice);
+            std::cout << "New alignment factor: " << h_constants->alignment_factor << std::endl;
+            break;
+        case ('e'):
+            // add separation
+            h_constants->separation_factor += INCREMENT_FACTOR;
+            cudaMemcpy(d_constants, h_constants, sizeof(Constants), cudaMemcpyHostToDevice);
+            std::cout << "New separation factor: " << h_constants->separation_factor << std::endl;
+            break;
+        case ('d'):
+            // sub separation
+            h_constants->separation_factor -= INCREMENT_FACTOR;
+            cudaMemcpy(d_constants, h_constants, sizeof(Constants), cudaMemcpyHostToDevice);
+            std::cout << "New separation factor: " << h_constants->separation_factor << std::endl;
+            break;
     }
 }
 
@@ -771,6 +808,6 @@ void computeFPS()
     }
 
     char fps[256];
-    sprintf(fps, "Fish simulation: %3.1f fps (Max 100Hz)", avgFPS);
+    sprintf(fps, "Fish simulation: %3.1f fps", avgFPS);
     glutSetWindowTitle(fps);
 }
