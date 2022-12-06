@@ -17,5 +17,7 @@ Space - pause and start animation
 Escape - quit application
 
 Q/A - increment/decrement cohesion factor
+
 W/S - increment/decrement alignment factor
+
 E/D - increment/decrement separation factor
