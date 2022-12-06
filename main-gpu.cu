@@ -1,3 +1,35 @@
+// ========================= IMPORTANT =========================
+// The graphics part of this code strongly rely on NVIDIA's code
+// Therefore the below notice will be posted in my code
+// =============================================================
+
+/* Copyright (c) 2021, NVIDIA CORPORATION. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *  * Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *  * Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *  * Neither the name of NVIDIA CORPORATION nor the names of its
+ *    contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS ``AS IS'' AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
+ * OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -54,6 +86,7 @@ const int sea_depth   = window_depth / 2;
 const float cell_width = window_width / GRID_SIZE;
 const float cell_height = window_height / GRID_SIZE;
 
+// tabs used for grid optimization
 int *d_gridCell, *d_gridFish, *d_cellStart, *d_startCell, *d_endCell;
 
 bool doAnimate = true; // operates pause button
@@ -128,7 +161,7 @@ void timerEvent(int value);
 void display();
 void runAnimation(struct cudaGraphicsResource **vbo_resource);
 
-
+// calculates each fish position in the grid
 __global__ void setUnsortedGrid(FishData *data, int* gridCell, int* gridFish)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -139,6 +172,7 @@ __global__ void setUnsortedGrid(FishData *data, int* gridCell, int* gridFish)
 
 }
 
+// if gridCell changes value over neighbors update cellStart
 __global__ void prepareCellStart(int* gridCell, int* cellStart)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -148,7 +182,7 @@ __global__ void prepareCellStart(int* gridCell, int* cellStart)
         cellStart[gridCell[tid]] = tid;
 }
 
-
+// fish should not be going neither too fast nor too slow
 __global__ void kernel_normalize_velocity(FishData *data)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -175,6 +209,7 @@ __global__ void kernel_normalize_velocity(FishData *data)
     data->vz[tid] = tvz;
 }
 
+// In order not to calculate first and last fish index for each cell we precompute it
 __global__ void prepareStartEndCell(int* cellStart, int* startCell, int* endCell, unsigned int N)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -185,29 +220,31 @@ __global__ void prepareStartEndCell(int* cellStart, int* startCell, int* endCell
     int startPos = tid - GRID_RANGE;
     int endPos = tid + GRID_RANGE + 1;
 
+    // check whether start and end is in the same row
     int tidRow = tid / GRID_SIZE;
     if(startPos / GRID_SIZE < tidRow)
         startPos = tidRow * GRID_SIZE;
     if(endPos / GRID_SIZE > tidRow)
         endPos = tidRow * GRID_SIZE + GRID_SIZE;
 
+    // start and end have to be in the grid
     if(startPos < 0)
         startPos = 0;
     if(endPos >= GRID_SIZE * GRID_SIZE)
         endPos = GRID_SIZE * GRID_SIZE;
 
+    // ommiting empty cells -> those have -1
     while(startPos < GRID_SIZE * GRID_SIZE && cellStart[startPos] == -1)
         startPos++;
     while(endPos < GRID_SIZE * GRID_SIZE && cellStart[endPos] == -1)
         endPos++;
-    
-
-
 
     startCell[tid] = startPos == GRID_SIZE * GRID_SIZE ? N : cellStart[startPos];
     endCell[tid] = endPos == GRID_SIZE * GRID_SIZE ? N : cellStart[endPos];
 }
 
+
+// Each fish checks its neighbors depending on the grid
 __global__ void kernel_prepare_move(FishData *data,
         int* gridFish, int* startCell, int* endCell, int* gridCell,
         struct Constants *consts)
@@ -222,7 +259,7 @@ __global__ void kernel_prepare_move(FishData *data,
     float l_separationX = 0, l_separationY = 0, l_separationZ = 0;
     float l_count = 0;
 
-    // prepare variables
+    // prepare variables to reduce reads
     float tvx = data->vx[tid];
     float tvy = data->vy[tid];
     float tvz = data->vz[tid];
@@ -236,6 +273,7 @@ __global__ void kernel_prepare_move(FishData *data,
         int newCell = cell + i * GRID_SIZE;
         if(newCell >= 0 && newCell < GRID_SIZE * GRID_SIZE)
         {
+            // index of first and last fish which we will have to check
             int startPos = startCell[newCell];
             int endPos = endCell[newCell];
 
@@ -252,6 +290,7 @@ __global__ void kernel_prepare_move(FishData *data,
 
                 float d = dx * dx + dy * dy + dz * dz;
                 
+                // if another fish is close enough and in view angle we apply boid computations
                 if(d < SIGHT_RANGE && d > 0 && acos((-dx * tvx + -dy * tvy + -dz * tvz) / sqrt(d * (tvx * tvx + tvy * tvy + tvz * tvz)) ) < SIGHT_ANGLE)
                 {
                     l_cohesionX += ax;
@@ -274,6 +313,8 @@ __global__ void kernel_prepare_move(FishData *data,
             }
         }
     }
+
+    // after all computations if fish neighbors any other fish its velocity will get updated (in the future via fv)
     if(l_count > 0)
     {
 
@@ -298,6 +339,7 @@ __global__ void kernel_prepare_move(FishData *data,
     }
 }
 
+// Apply velocity to position
 __global__ void kernel_move(FishData *data)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -315,16 +357,19 @@ __global__ void kernel_move(FishData *data)
         data->vy[tid] = data->vy[tid] + TURN_FACTOR;
     else if(ny > sea_height)
         data->vy[tid] = data->vy[tid] - TURN_FACTOR;
+    // repair Z velocity
     if(nz < -sea_depth)
         data->vz[tid] = data->vz[tid] + TURN_FACTOR;
     else if(nz > sea_depth)
         data->vz[tid] = data->vz[tid] - TURN_FACTOR;
+
+    // update position
     data->x[tid] = data->x[tid] + data->vx[tid];
     data->y[tid] = data->y[tid] + data->vy[tid];
     data->z[tid] = data->z[tid] + data->vz[tid];
 }
 
-
+// display function - draws triangles
 __global__ void kernel_display(float *pos, FishData *data)
 {
     unsigned int tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -369,6 +414,7 @@ __global__ void kernel_display(float *pos, FishData *data)
 
 int main(int argc, char **argv)
 {
+    // Parameters input
     h_constants = new Constants(4.0f, 4.0f, 4.0f);
     if(argc > 1)
     {
@@ -406,9 +452,9 @@ int main(int argc, char **argv)
     return 0;
 }
 
+// All memory needed for GPU (and some for CPU)
 void initMemory()
 {
-
     float* h_x = new float[N];
     float* h_y = new float[N];
     float* h_z = new float[N];
@@ -418,7 +464,7 @@ void initMemory()
 
     cudaMalloc(&d_constants, sizeof(Constants));
     cudaMemcpy(d_constants, h_constants, sizeof(Constants), cudaMemcpyHostToDevice);
-    srand(0);
+    srand(time(NULL));
 
     for(int i = 0; i < N; ++i)
     {
@@ -426,14 +472,12 @@ void initMemory()
         h_y[i] = mapRange(0, 100, -sea_height, sea_height, rand() % 100);
         h_z[i] = mapRange(0, 100, -sea_depth, sea_depth, rand() % 100);
 
-        // std::cout << h_x[i] << " " << h_y[i] << std::endl;
-
         h_vx[i] = mapRange(0, 100, -MAX_VELOCITY, MAX_VELOCITY, rand() % 100);
         h_vy[i] = mapRange(0, 100, -MAX_VELOCITY, MAX_VELOCITY, rand() % 100);
         h_vz[i] = mapRange(0, 100, -MAX_VELOCITY, MAX_VELOCITY, rand() % 100);
-        // printf("Line %d has x: %f y: %f vx: %f vy: %f\n", i, h_x[i], h_y[i], h_vx[i], h_vy[i]);
     }
 
+    // Since d_fishData is pointer to struct it has some more steps to be allocated
     float *t_x, *t_y, *t_z;
     float *t_vx, *t_vy, *t_vz;
     float *t_fvx, *t_fvy, *t_fvz;
@@ -530,6 +574,7 @@ void timerEvent(int value)
     }
 }
 
+// Free memory
 void cleanup()
 {
 
@@ -617,6 +662,8 @@ void display()
     computeFPS();
 }
 
+// Main part of this program.
+// Updates grid and then applies boid algorithm
 void runAnimation(struct cudaGraphicsResource **vbo_resource)
 {
     // map OpenGL buffer object for writing from CUDA
@@ -630,9 +677,7 @@ void runAnimation(struct cudaGraphicsResource **vbo_resource)
     dim3 gridGridSize(GRID_SIZE * GRID_SIZE / 1024 + 1, 1, 1);
     dim3 blockGridSize(1024, 1, 1);
     if(doAnimate)
-    {
-     
-
+    {     
         // Prepare helping grid
         setUnsortedGrid<<<grid2D, block2D>>>(d_fishData, d_gridCell, d_gridFish);
         thrust::sort_by_key(thrust::device, d_gridCell, d_gridCell + N, d_gridFish);
@@ -645,7 +690,7 @@ void runAnimation(struct cudaGraphicsResource **vbo_resource)
         kernel_normalize_velocity<<<grid2D, block2D>>>(d_fishData);
         kernel_move<<<grid2D, block2D>>>(d_fishData);
     }
-
+    // Prepar data to be dsiplayed
     kernel_display<<<grid2D, block2D>>>(dptr, d_fishData);
 
     // unmap buffer object
