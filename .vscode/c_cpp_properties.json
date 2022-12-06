@@ -4,7 +4,8 @@
             "name": "Linux",
             "includePath": [
                 "${workspaceFolder}/**",
-                "~/CUDA/cuda-samples/Common/"
+                "~/CUDA/cuda-samples/Common/",
+                "/usr/include/cuda/std/detail/libcxx/include"
             ],
             "defines": [],
             "compilerPath": "/usr/bin/gcc",

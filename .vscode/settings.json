@@ -65,6 +65,13 @@
         "cinttypes": "cpp",
         "typeinfo": "cpp",
         "semaphore": "cpp",
-        "__nullptr": "cpp"
+        "__nullptr": "cpp",
+        "vector_types.h": "c",
+        "helper_functions.h": "c",
+        "helper_cuda.h": "c",
+        "helper_gl.h": "c",
+        "__bit_reference": "cpp",
+        "__string": "cpp",
+        "ios": "cpp"
     }
 }

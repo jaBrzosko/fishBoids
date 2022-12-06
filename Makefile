@@ -156,7 +156,7 @@ else ifneq ($(TARGET_ARCH),$(HOST_ARCH))
         HOST_COMPILER ?= powerpc64le-linux-gnu-g++
     endif
 endif
-HOST_COMPILER ?= g++
+HOST_COMPILER ?= g++-10
 NVCC          := $(CUDA_PATH)/bin/nvcc -ccbin $(HOST_COMPILER)
 
 # internal flags
@@ -352,7 +352,7 @@ endif
 
 ################################################################################
 
-FILE=main
+FILE=main-gpu
 
 # Target rules
 all: build
@@ -366,11 +366,21 @@ else
 	@echo "Sample is ready - all dependencies have been met"
 endif
 
-$(FILE).o:$(FILE).cu
-	$(EXEC) $(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
+GPU_FILE=main-gpu
+CPU_FILE=main-cpu
 
-$(FILE): $(FILE).o
-	$(EXEC) $(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) -o $@ $+ $(LIBRARIES)
+
+$(GPU_FILE).o:$(GPU_FILE).cu
+	nvcc -ccbin g++-10 $(INCLUDES) $(ALL_CCFLAGS) -o $@ -c $<
+
+$(GPU_FILE): $(GPU_FILE).o
+	nvcc -ccbin g++-10 $(ALL_LDFLAGS) -o $@ $+ $(LIBRARIES)
+
+$(CPU_FILE).o:$(CPU_FILE).cu
+	nvcc -ccbin g++-10 $(INCLUDES) $(ALL_CCFLAGS) -o $@ -c $<
+
+$(CPU_FILE): $(CPU_FILE).o
+	nvcc -ccbin g++-10 $(ALL_LDFLAGS) -o $@ $+ $(LIBRARIES)
 
 run: build
 	$(EXEC) ./$(FILE)
