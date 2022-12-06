@@ -136,7 +136,7 @@ void motion(int x, int y);
 void timerEvent(int value);
 
 // Cuda functionality
-void runCuda(struct cudaGraphicsResource **vbo_resource);
+void runAnimation(struct cudaGraphicsResource **vbo_resource);
 void runAutoTest(int devID, char **argv, char *ref_file);
 void checkResultCuda(int argc, char **argv, const GLuint &vbo);
 
@@ -334,7 +334,7 @@ bool runTest(int argc, char **argv, char *ref_file)
         createVBO(&vbo, &cuda_vbo_resource, cudaGraphicsMapFlagsWriteDiscard);
 
         // run the cuda part
-        runCuda(&cuda_vbo_resource);
+        runAnimation(&cuda_vbo_resource);
 
         // start rendering mainloop
         glutMainLoop();
@@ -346,7 +346,7 @@ bool runTest(int argc, char **argv, char *ref_file)
 ////////////////////////////////////////////////////////////////////////////////
 //! Run the Cuda part of the computation
 ////////////////////////////////////////////////////////////////////////////////
-void runCuda(struct cudaGraphicsResource **vbo_resource)
+void runAnimation(struct cudaGraphicsResource **vbo_resource)
 {
     // map OpenGL buffer object for writing from CUDA
     float4 *dptr;
@@ -462,7 +462,7 @@ void display()
     sdkStartTimer(&timer);
 
     // run CUDA kernel to generate vertex positions
-    runCuda(&cuda_vbo_resource);
+    runAnimation(&cuda_vbo_resource);
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 

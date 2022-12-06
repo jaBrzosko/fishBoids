@@ -73,7 +73,7 @@ StopWatchInterface *timer = NULL;
 
 // declarations
 bool initGL(int *argc, char **argv);
-void initCUDA();
+void initMemory();
 void createVBO(GLuint *vbo, struct cudaGraphicsResource **vbo_res,
                unsigned int vbo_res_flags);
 void deleteVBO(GLuint *vbo, struct cudaGraphicsResource *vbo_res);
@@ -86,7 +86,7 @@ void motion(int x, int y);
 void computeFPS();
 void timerEvent(int value);
 void display();
-void runCuda(struct cudaGraphicsResource **vbo_resource);
+void runAnimation(struct cudaGraphicsResource **vbo_resource);
 
 __global__ void kernel_normalize_velocity(float *vx, float *vy)
 {
@@ -308,7 +308,7 @@ int main(int argc, char **argv)
     // Create the CUTIL timer
     sdkCreateTimer(&timer);
 
-    initCUDA();
+    initMemory();
     initGL(&argc, argv);
 
     createVBO(&vbo, &cuda_vbo_resource, cudaGraphicsMapFlagsWriteDiscard);
@@ -317,7 +317,7 @@ int main(int argc, char **argv)
     return 0;
 }
 
-void initCUDA()
+void initMemory()
 {
     float* h_x = new float[N];
     float* h_y = new float[N];
@@ -462,7 +462,7 @@ void display()
     sdkStartTimer(&timer);
 
     // run CUDA kernel to generate vertex positions
-    runCuda(&cuda_vbo_resource);
+    runAnimation(&cuda_vbo_resource);
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -487,7 +487,7 @@ void display()
     computeFPS();
 }
 
-void runCuda(struct cudaGraphicsResource **vbo_resource)
+void runAnimation(struct cudaGraphicsResource **vbo_resource)
 {
     // map OpenGL buffer object for writing from CUDA
     float *dptr;
